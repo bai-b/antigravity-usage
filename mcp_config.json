@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "usage": {
+      "command": "python",
+      "args": ["-B", "${PLUGIN_ROOT}/dashboard.py", "--mcp"]
+    }
+  }
+}
