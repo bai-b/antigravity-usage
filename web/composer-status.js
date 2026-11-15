@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 10) return;
+  if (window[key]?.version === 11) return;
   window[key]?.remove();
-  const state = window[key] = { version: 10, request: null };
+  const state = window[key] = { version: 11, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -54,7 +54,6 @@
     [data-agy-usage-status] .agy-usage-pill {position:relative;display:inline-flex;align-items:center;gap:4px;flex:none}
     [data-agy-usage-status] .agy-usage-icon {display:grid;place-items:center;flex:none}
     [data-agy-usage-status] .agy-usage-reading {position:absolute;left:0;visibility:hidden;width:max-content;pointer-events:none}
-    [data-agy-usage-status] .agy-usage-short {white-space:pre;line-height:10px;font-size:10px;text-align:left}
     [data-agy-usage-launcher] {display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--foreground,CanvasText);cursor:pointer;font-size:12px;white-space:nowrap;-webkit-app-region:no-drag}
     [data-agy-usage-launcher]:hover,[data-agy-usage-launcher]:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-launcher]:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
@@ -560,7 +559,7 @@
           ["平均首 Token（TTFT）",usage.average_ttft == null ? "暂无数据" : decimal(usage.average_ttft)+" 秒"],
           ["最近输出速率",usage.speed == null ? "暂无数据" : decimal(usage.speed)+" tok/s"]
         ]}, [usage.turns == null ? "" : compact.format(usage.turns)+"轮",
-          usage.speed == null ? "" : decimal(usage.speed)+" tok/s"].filter(Boolean).join("\n") || "—");
+          usage.speed == null ? "" : decimal(usage.speed)+"t/s"].filter(Boolean).join("·") || "—");
       assign(1, (usage.total == null ? "Token —" : compact.format(usage.total)+" tok")
         +(usage.hit == null ? "" : " · 命中 "+decimal(usage.hit)+"%"), {
         title:"Token 用量",value:value(usage.total)+" tok",rows:[
@@ -568,7 +567,7 @@
           ["未缓存输入",value(usage.uncached)+" tok"],["缓存读取",value(usage.cached)+" tok"],
           ["缓存写入",value(usage.written)+" tok"],["输出",value(usage.output)+" tok"]
         ]}, [usage.total == null ? "" : compact.format(usage.total),
-          usage.hit == null ? "" : "命中 "+decimal(usage.hit)+"%"].filter(Boolean).join("\n") || "—");
+          usage.hit == null ? "" : decimal(usage.hit)+"%"].filter(Boolean).join("·") || "—");
       const contextReading = [context, contextPercent].filter(Boolean).join(" · ");
       assign(2,contextReading,{
         title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
@@ -579,7 +578,7 @@
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
           : (usage.call_model ? "最近一次调用 · "+usage.call_model : "") + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
-      },[context, contextPercent].filter(Boolean).join("\n"));
+      },[context, contextPercent].filter(Boolean).join("·"));
       const periods=[period("5h","5h"),period("weekly","周")].filter(Boolean);
       stats[3].button.hidden=!periods.length;
       assign(3,periods.map(item=>item[0]).join(" · "),{

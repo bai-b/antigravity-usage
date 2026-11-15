@@ -1,6 +1,7 @@
 """Install or remove the per-user Antigravity plugin from the Windows release ZIP."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,54 @@ def check_destination():
         raise OSError(f"发现未由发布包安装的同名插件，请先移走 {DESTINATION}")
 
 
+def replace_plugin_directory(source, destination):
+    deadline = time.monotonic() + 12
+    while True:
+        try:
+            source.replace(destination)
+            return
+        except OSError as error:
+            # Windows can hold the old Python runtime open briefly after its socket is closed.
+            if getattr(error, "winerror", None) not in {5, 32, 33}:
+                raise
+            if time.monotonic() >= deadline:
+                raise OSError("插件文件还在使用。请退出 Antigravity 后重新运行 Install.cmd。") from error
+            time.sleep(0.25)
+
+
+def same_runtime(installed, incoming):
+    def fingerprints(folder):
+        entries = {}
+        if not folder.is_dir():
+            return entries
+        for file in folder.rglob("*"):
+            if file.is_file():
+                with file.open("rb") as stream:
+                    entries[file.relative_to(folder)] = hashlib.file_digest(stream, "sha256").digest()
+        return entries
+
+    return fingerprints(installed) == fingerprints(incoming)
+
+
+def update_plugin_files(incoming, backup, updated):
+    files = sorted(file for file in incoming.rglob("*") if file.is_file()
+                   and file.relative_to(incoming).parts[0] not in {"runtime", MARKER})
+    for source in [*files, incoming / MARKER]:
+        relative = source.relative_to(incoming)
+        target = DESTINATION / relative
+        if target.is_symlink() or not target.resolve().is_relative_to(DESTINATION.resolve()):
+            raise OSError(f"插件文件位置与预期不符：{relative}")
+        previous = backup / relative if target.exists() else None
+        if previous is not None:
+            if source.read_bytes() == target.read_bytes():
+                continue
+            previous.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target, previous)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        replace_plugin_directory(source, target)
+        updated.append((target, previous))
+
+
 def stage_plugin(stage, version):
     for name in PAYLOAD:
         origin = SOURCE / name
@@ -144,19 +193,36 @@ def install():
         previous = scratch / "previous"
         incoming.mkdir()
         stage_plugin(incoming, version)
-        if DESTINATION.exists():
-            manage_sidecar("DISABLE")
-        stop_bridge()
-        if DESTINATION.exists():
-            DESTINATION.replace(previous)
+        had_existing = DESTINATION.exists()
+        reuse_runtime = had_existing and same_runtime(DESTINATION / "runtime", incoming / "runtime")
+        updated = []
+        moved_incoming = False
         try:
-            incoming.replace(DESTINATION)
+            if had_existing:
+                bridge_command(b"agy-usage:detach", timeout=2)
+                manage_sidecar("DISABLE")
+            stop_bridge()
+            if reuse_runtime:
+                update_plugin_files(incoming, previous, updated)
+            else:
+                if had_existing:
+                    replace_plugin_directory(DESTINATION, previous)
+                replace_plugin_directory(incoming, DESTINATION)
+                moved_incoming = True
             save_settings(True)
         except (OSError, ValueError, TypeError):
-            if DESTINATION.exists():
-                DESTINATION.replace(incoming)
-            if previous.exists():
-                previous.replace(DESTINATION)
+            if reuse_runtime:
+                for target, backup in reversed(updated):
+                    if backup is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        replace_plugin_directory(backup, target)
+            else:
+                if moved_incoming:
+                    replace_plugin_directory(DESTINATION, incoming)
+                if previous.exists():
+                    replace_plugin_directory(previous, DESTINATION)
+            if had_existing:
                 save_settings(True)
                 manage_sidecar("ENABLE")
             raise

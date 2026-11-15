@@ -258,7 +258,7 @@ const timer = setInterval(() => { if (!document.hidden) update(false); }, 15000)
 return {dispose() { disposed = true; clearInterval(timer); }};
 }
 
-if (window.__agyUsageStatus?.version === 10) {
+if (window.__agyUsageStatus?.version === 11) {
   window.__agyUsageStatus.createDashboard = createDashboard;
 } else {
   createDashboard(document, async filters => {
