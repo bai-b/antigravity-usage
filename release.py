@@ -297,7 +297,7 @@ def publish(owner, repo, tag, version, files, notes_file, token, force_upload, d
         release = existing
     else:
         if dry:
-            say("[dry-run] would create release " + tag)
+            say("[dry-run] 将创建 Release " + tag)
             return None
         release = api("POST", "/repos/" + owner + "/" + repo + "/releases",
                       {"tag_name": tag, "name": name, "body": body,
@@ -310,7 +310,7 @@ def publish(owner, repo, tag, version, files, notes_file, token, force_upload, d
             say("跳过 " + item.name + "（已上传，大小一致）")
             continue
         if dry:
-            say("[dry-run] would upload " + item.name)
+            say("[dry-run] 将上传 " + item.name)
             continue
         if asset:
             api("DELETE", "/repos/" + owner + "/" + repo + "/releases/assets/" + str(asset["id"]), token=token)
@@ -354,13 +354,13 @@ def main():
     if args.no_build:
         say("跳过构建（--no-build）")
     elif args.dry_run:
-        say("[dry-run] would build portable + source packages")
+        say("[dry-run] 将构建便携包与源码包")
     else:
         step("build")
         build_portable()
 
     if args.dry_run:
-        say("[dry-run] would create source update package")
+        say("[dry-run] 将生成源码更新包")
     else:
         step("source package")
         source_zip = build_source_zip(version)
