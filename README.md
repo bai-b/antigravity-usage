@@ -26,4 +26,10 @@
 
 上传源码到 GitHub 后，可在 Actions 手动运行 Windows release 工作流取得构建产物，或推送和 `plugin.json` 一致的版本标签（例如 `v1.1.4`）发布到 Releases。
 
+## 发布新版本
+
+改完源码后把 `plugin.json` 的 `version` 加一，然后在仓库根目录双击 **`Publish.cmd`**（或在终端运行 `python release.py`）。一条命令依次完成：在 `dist/` 构建便携包与源码包 → 更新 `.gitignore` 放行当前版本、把旧版本包移出索引 → 提交 → 打 `V<版本>` 标签 → 推送 → 创建或更新同名 Release 并上传两个 zip。首次运行会要求一次 GitHub 授权（设备码），token 缓存在 `%LOCALAPPDATA%\agy-release\config.json`，之后不再询问。常用开关：`--no-build` 复用已有包，`--dry-run` 只打印计划，`--force-upload` 覆盖同名附件，`--no-push` 只提交不推送，`--actions` 只推送标签交给云端出包，`--login` 单独完成授权。
+
+云端也可以出包：`.github/workflows/release.yml` 在推送 `V*` 标签时用 Windows runner 构建并发布，`--actions` 模式即走这条路径。本地脚本适合离线或需要立刻看到产物时用，两种方式互为备份。
+
 界面整理参考 [unslop](https://heydamir.design/unslop)，作者 Damir Sokolovsky，CC BY 4.0。运行时许可与来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。

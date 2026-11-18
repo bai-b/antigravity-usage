@@ -9,3 +9,12 @@ dist/*.sha256
 !dist/antigravity-usage-1.1.10-win-x64.zip
 !dist/antigravity-usage-1.1.10-win-x64.zip.sha256
 !dist/antigravity-usage-1.1.10-source-update.zip
+
+# >>> agy-release managed >>>
+dist/*/
+dist/*.zip
+dist/*.sha256
+!dist/antigravity-usage-1.1.10-win-x64.zip
+!dist/antigravity-usage-1.1.10-win-x64.zip.sha256
+!dist/antigravity-usage-1.1.10-source-update.zip
+# <<< agy-release managed <<<
