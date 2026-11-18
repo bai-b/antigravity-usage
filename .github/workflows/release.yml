@@ -21,14 +21,14 @@ jobs:
         run: python build_release.py
       - name: Build source update package
         run: python -c "import json,release; v=json.load(open('plugin.json',encoding='utf-8'))['version']; release.build_source_zip(v)"
-      - name: Verify artifacts
+      - name: Show artifacts
         run: dir dist
-      - name: Publish
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          name: v${{ github.ref_name }}
-          generate_release_notes: false
-          body_path: ''
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
           files: |
             dist/*-win-x64.zip
             dist/*-win-x64.zip.sha256
