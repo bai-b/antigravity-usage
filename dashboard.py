@@ -90,9 +90,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         args = {key: values[-1] for key, values in parse_qs(url.query).items()}
         try:
+            hours = args.get("hours", "")
             report = self.server.usage.report(
                 args.get("start", ""), args.get("end", ""), args.get("conversation", ""),
                 args.get("fx") == "1", args.get("only") == "1", self.server.models(),
+                int(hours) if hours.isdigit() else 0, args.get("day") == "1",
             )
             report["quota"] = self.server.quotas()
         except (ValueError, OSError) as error:

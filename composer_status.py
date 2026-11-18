@@ -111,23 +111,24 @@ def active_context(rows, selected, catalog, window_mode=""):
 def step_statistics(path):
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1) as db:
         from usage import message, seconds
-        turns, steps, tool_time = 0, 0, 0
+        turns, steps, tool_time, compactions = 0, 0, 0, 0
         for kind, raw in db.execute("SELECT step_type,metadata FROM steps WHERE status=3"):
             steps += 1
             turns += kind == 14
+            compactions += kind == 23
             metadata = message(raw, (1, 4, 8, 32))
             if 4 in metadata:
                 started = seconds(metadata, 32) or seconds(metadata, 1)
                 ended = seconds(metadata, 8)
                 if started and ended and ended >= started:
                     tool_time += ended - started
-        return {"turns": turns, "steps": steps, "tool_seconds": tool_time}
+        return {"turns": turns, "steps": steps, "tool_seconds": tool_time, "compactions": compactions}
 
 
 def session_metrics(usage, conversation, selected="", catalog=None, window_mode=""):
     catalog = catalog or {}
     if not UUID.fullmatch(conversation):
-        return {"reference_usd": 0, **active_context([], selected, catalog, window_mode)}
+        return {"reference_usd": 0, "compactions": 0, **active_context([], selected, catalog, window_mode)}
     path = APP_DATA / "conversations" / (conversation + ".db")
     try:
         rows = usage.read_conversation(path)
@@ -136,7 +137,8 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
     except (OSError, ValueError, sqlite3.Error, OverflowError):
         return {}
     if not rows:
-        return {"total": 0, "reference_usd": 0, **active_context(rows, selected, catalog, window_mode)}
+        return {"total": 0, "reference_usd": 0, "compactions": getattr(usage, "compactions", {}).get(path.stem, 0),
+                **active_context(rows, selected, catalog, window_mode)}
     recent = rows[-1]
     total = sum(map(count_tokens, rows))
     input_tokens = total - sum(row["output"] for row in rows)
@@ -168,7 +170,8 @@ def dashboard_report(usage, filters, snapshot, catalog, fx):
     try:
         report = usage.report(
             filters.get("start", ""), filters.get("end", ""), filters.get("conversation", ""),
-            True, filters.get("only") is True, catalog,
+            True, filters.get("only") is True, catalog, filters.get("hours") or 0,
+            filters.get("day") is True,
         )
         return {"report": report | {"quota": snapshot, "latest_fx": fx}}
     except (OSError, sqlite3.Error, TypeError, ValueError) as error:

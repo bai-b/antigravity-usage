@@ -3,57 +3,91 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Antigravity 用量看板</title>
+  <title>Antigravity 用量</title>
   <link rel="stylesheet" href="dashboard.css">
   <script defer src="dashboard.js"></script>
 </head>
 <body>
-  <main>
-    <header class="topbar">
-      <div><h1>Antigravity 用量</h1><p id="state" role="status">正在读取本机记录…</p></div>
-      <div class="toolbar"><button id="refresh">刷新</button><button id="close-dashboard" hidden aria-label="关闭用量看板" title="关闭（Esc）">×</button></div>
-    </header>
-    <nav class="tabs" role="tablist" aria-label="用量视图">
-      <button id="history-tab" role="tab" aria-selected="true" aria-controls="history">用量趋势</button>
-      <button id="session-tab" role="tab" aria-selected="false" aria-controls="session-panel" tabindex="-1">会话</button>
-      <button id="quota-tab" role="tab" aria-selected="false" aria-controls="quota-panel" tabindex="-1">模型额度</button>
-    </nav>
-
-    <section id="session-panel" role="tabpanel" aria-labelledby="session-tab" hidden>
-      <div class="section-header">
-        <div><h2 id="session-title">会话用量</h2><p id="session-hint" class="muted">默认显示最近产生用量的会话。</p></div>
-        <label class="picker">会话<select id="session"><option value="">最近活跃会话</option></select></label>
+<div class="shell">
+  <header class="head">
+    <div class="headline">
+      <h1>用量</h1>
+      <p id="state" role="status">正在读取本机记录…</p>
+    </div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="日期范围">
+        <button type="button" data-days="1" aria-pressed="false">当天</button>
+        <button type="button" data-hours="24" aria-pressed="false">24 小时</button>
+        <button type="button" data-days="7" aria-pressed="false">近 7 天</button>
+        <button type="button" data-days="14" aria-pressed="false">近 14 天</button>
+        <button type="button" data-days="30" aria-pressed="false">近 30 天</button>
+        <button type="button" data-days="0" aria-pressed="true">全部</button>
       </div>
-      <div id="session-metrics" class="metrics"></div>
-      <details><summary>最近 20 次模型调用</summary>
-        <div class="scroll"><table><thead><tr><th>时间</th><th>模型</th><th>未缓存输入</th><th>缓存读取</th><th>输出</th><th>生成速率</th></tr></thead><tbody id="recent"></tbody></table></div>
-      </details>
-    </section>
+      <label class="field">起<input id="start" type="date"></label>
+      <label class="field">止<input id="end" type="date"></label>
+      <button id="refresh" type="button" class="ghost">刷新</button>
+      <button id="close-dashboard" type="button" class="ghost icon" hidden aria-label="关闭用量看板" title="关闭（Esc）">×</button>
+    </div>
+  </header>
 
-    <section id="history" role="tabpanel" aria-labelledby="history-tab">
-      <form id="filters" class="toolbar">
-        <div class="presets" aria-label="快速日期筛选"><button type="button" data-days="1" aria-pressed="false">今天</button><button type="button" data-days="7" aria-pressed="false">近 7 天</button><button type="button" data-days="30" aria-pressed="false">近 30 天</button><button type="button" data-days="0" aria-pressed="true">全部</button></div>
-        <label>开始<input id="start" type="date"></label>
-        <label>结束<input id="end" type="date"></label>
-        <label class="checkbox"><input type="checkbox" id="only">仅所选会话</label>
-        <button type="submit" class="primary">筛选</button>
-      </form>
-      <div id="history-metrics" class="metrics"></div>
-      <figure>
-        <figcaption><h2>每日 Token 用量</h2><span id="chart-caption">—</span></figcaption>
-        <div id="chart" class="chart" aria-label="每日 Token 用量"></div>
-      </figure>
-      <div class="scroll"><table><thead><tr><th>日期</th><th>Token 总量</th><th>缓存命中率</th><th>参考费用（USD）</th><th>参考费用（CNY）</th><th>USD/CNY · 汇率日期</th></tr></thead><tbody id="daily"></tbody></table></div>
-      <details><summary>按模型查看</summary>
-        <div class="scroll"><table><thead><tr><th>模型</th><th>调用次数</th><th>Token 总量</th><th>已计价 Token</th><th>USD</th><th>CNY</th></tr></thead><tbody id="models"></tbody></table></div>
-      </details>
-      <footer><p id="coverage">本机 Antigravity 桌面端 · UTC+08:00</p><p id="pricing"></p><p id="latest-fx" hidden></p><p>Google Cloud Global 标准 API 参考价 · Frankfurter 历史汇率</p></footer>
-    </section>
+  <div class="filterbar">
+    <label class="field wide">会话<select id="session"><option value="">最近活跃会话</option></select></label>
+    <label class="check"><input id="only" type="checkbox">仅所选会话</label>
+    <button id="filter" type="button" class="ghost">应用</button>
+    <p class="dim" id="range-note">—</p>
+  </div>
 
-    <section id="quota-panel" role="tabpanel" aria-labelledby="quota-tab" hidden>
-      <div class="section-header"><div><h2 id="quota-title">模型额度</h2><p id="quota-status" class="muted"></p></div></div>
-      <div class="scroll"><table><thead><tr><th>额度组</th><th>周期</th><th>剩余额度</th><th>重置时间（UTC+08:00）</th></tr></thead><tbody id="quota"></tbody></table></div>
-    </section>
-  </main>
+  <section class="card summary-card">
+    <div class="summary" id="tiles" aria-label="汇总指标"></div>
+    <div class="foldbar"><button id="fold" type="button" class="fold" aria-expanded="true" aria-controls="chart-area" title="收起或展开图表">⌄</button></div>
+    <div id="chart-area" class="chart-area">
+
+    <div class="chart-head">
+      <div class="headline">
+        <h2 id="chart-title">费用 · 按天</h2>
+        <p class="dim" id="chart-caption">—</p>
+      </div>
+      <div class="seg" role="group" aria-label="图表指标">
+        <button type="button" data-metric="usd" aria-pressed="true">费用</button>
+        <button type="button" data-metric="total" aria-pressed="false">Token</button>
+        <button type="button" data-metric="calls" aria-pressed="false">请求</button>
+      </div>
+    </div>
+    <div class="chart">
+      <div class="yaxis" id="yaxis" aria-hidden="true"></div>
+      <div class="plot" id="plot">
+        <svg id="chart-svg" viewBox="0 0 1000 240" preserveAspectRatio="none" aria-label="用量趋势柱状图" role="img"></svg>
+        <div class="cursor" id="cursor" hidden aria-hidden="true"></div>
+      </div>
+      <div class="xaxis" id="xaxis" aria-hidden="true"></div>
+    </div>
+  </div>
+</section>
+
+  <section class="card">
+    <div class="card-head"><div class="headline"><h2>模型分布</h2><p class="dim" id="share-note">—</p></div></div>
+    <div id="shares" class="shares"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div class="seg" role="group" aria-label="明细视图" id="views">
+        <button type="button" data-view="daily" aria-pressed="true">每日<span class="count" id="count-daily"></span></button>
+        <button type="button" data-view="models" aria-pressed="false">模型<span class="count" id="count-models"></span></button>
+        <button type="button" data-view="recent" aria-pressed="false">调用<span class="count" id="count-recent"></span></button>
+        <button type="button" data-view="sessions" aria-pressed="false">会话<span class="count" id="count-sessions"></span></button>
+        <button type="button" data-view="quota" aria-pressed="false">额度<span class="count" id="count-quota"></span></button>
+      </div>
+      <p class="dim" id="view-note"></p>
+    </div>
+    <div class="scroll" id="table-area"></div>
+  </section>
+
+  <footer>
+    <p id="coverage">本机 Antigravity 桌面端 · UTC+08:00</p>
+    <p id="pricing"></p>
+    <p id="latest-fx" hidden></p>
+  </footer>
+</div>
 </body>
 </html>

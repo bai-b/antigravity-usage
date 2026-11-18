@@ -19,6 +19,9 @@ APP_DATA = Path.home() / ".gemini" / "antigravity"
 TZ = timezone(timedelta(hours=8))
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 PRICES = json.loads((ROOT / "prices.json").read_text(encoding="utf-8"))
+ALIASES = {name.casefold(): target for name, target in PRICES.get("aliases", {}).items()}
+FX_CACHE = APP_DATA / "agy_usage_fx.json"
+FALLBACK_FX = 7.10
 DIRECT = build_opener(ProxyHandler({}))
 MODEL_IDS = {
     1318: "gemini-3.8-flash", 1319: "gemini-3.8-flash", 1322: "gemini-3.8-flash",
@@ -174,10 +177,12 @@ def conversation_rows(path):
         db.execute("BEGIN")
         details = generation_details(db)
         rows = []
-        # 15 = planner response, 23 = checkpoint, 3 = completed.
-        for index, raw in db.execute(
-            "SELECT idx, metadata FROM steps WHERE step_type IN (15, 23) AND status=3 ORDER BY idx"
+        compactions = 0
+        # 15 = planner response, 23 = checkpoint (context compaction), 3 = completed.
+        for index, step_type, raw in db.execute(
+            "SELECT idx, step_type, metadata FROM steps WHERE step_type IN (15, 23) AND status=3 ORDER BY idx"
         ):
+            compactions += step_type == 23
             metadata = message(raw, (1, 9))
             usage = nested(metadata, 9, (1, 2, 3, 4, 5, 7))
             when = seconds(metadata, 1)
@@ -201,27 +206,69 @@ def conversation_rows(path):
                 "seconds": duration if duration and duration > 0 else None, "context": context,
                 "limit": limit, "ttft": ttft, "breakdown": breakdown, "_message": usage.get(7),
             })
-    return rows
+    return rows, compactions
 
 
-def reference_cost(row):
-    model = row["model"]
+def priced_model(model):
+    """Desktop role models share the price of the equivalent public model."""
+    seen = set()
+    while True:
+        target = ALIASES.get(model.casefold())
+        if not target or target in seen:
+            return model
+        seen.add(model)
+        model = target
+
+
+def row_rate(row):
+    model = priced_model(row["model"])
     for base, rates in PRICES["models"].items():
         if model != base and not model.startswith(base + "-"):
             continue
         rate = next((r for r in reversed(rates) if r["from"] <= row["day"]), None)
         if not rate or (row["written"] and "write" not in rate):
             return None
-        return (
-            row["uncached"] * rate["input"] + row["cached"] * rate["read"]
-            + row["written"] * rate.get("write", 0) + row["output"] * rate["output"]
-        ) / 1_000_000
+        return rate
     return None
+
+
+def reference_cost(row):
+    rate = row_rate(row)
+    if not rate:
+        return None
+    return (
+        row["uncached"] * rate["input"] + row["cached"] * rate["read"]
+        + row["written"] * rate.get("write", 0) + row["output"] * rate["output"]
+    ) / 1_000_000
+
+
+def reference_savings(row):
+    """Cached tokens are billed at the read rate instead of the input rate."""
+    rate = row_rate(row)
+    if not rate or rate["input"] <= rate["read"]:
+        return None
+    return row["cached"] * (rate["input"] - rate["read"]) / 1_000_000
 
 
 def reference_total(rows):
     amounts = [amount for row in rows if (amount := reference_cost(row)) is not None]
     return math.fsum(amounts) if amounts else None
+
+
+def read_fx_cache():
+    try:
+        data = json.loads(FX_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_fx_cache(data):
+    try:
+        FX_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        FX_CACHE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def latest_usd_cny():
@@ -235,9 +282,15 @@ def latest_usd_cny():
         rate = quote["rate"]
         day = date.fromisoformat(quote["date"])
         if (quote["base"], quote["quote"]) == ("USD", "CNY") and type(rate) in (int, float) and 0 < rate < 100:
+            cache = read_fx_cache()
+            cache["latest"] = {"rate": rate, "date": day.isoformat()}
+            write_fx_cache(cache)
             return {"rate": rate, "date": day.isoformat()}
     except (OSError, KeyError, ValueError, TypeError):
         pass
+    cached = read_fx_cache().get("latest")
+    if isinstance(cached, dict) and type(cached.get("rate")) in (int, float) and 0 < cached["rate"] < 100:
+        return {"rate": cached["rate"], "date": str(cached.get("date") or ""), "cached": True}
     return None
 
 
@@ -251,14 +304,16 @@ def aggregate(rows):
     timed = [row for row in rows if row["seconds"]]
     priced = [row for row in rows if row["usd"] is not None]
     converted = [row for row in priced if row["cny"] is not None]
+    saved = [amount for row in rows if (amount := reference_savings(row)) is not None]
     return {
         **sums, "calls": len(rows), "total": total_input + sums["output"],
         "hit": sums["cached"] / total_input if total_input else None,
         "speed": sum(row["output"] for row in timed) / sum(row["seconds"] for row in timed) if timed else None,
         "timed": len(timed), "usd": math.fsum(row["usd"] for row in priced) if priced else None,
         "cny": math.fsum(row["cny"] for row in converted) if converted else None,
-        "priced": len(priced), "converted": len(converted),
+        "priced": len(priced), "converted": len(converted), "unpriced": len(rows) - len(priced),
         "priced_tokens": sum(count_tokens(row) for row in priced),
+        "savings": math.fsum(saved) if saved else None,
     }
 
 
@@ -266,9 +321,11 @@ class Usage:
     def __init__(self, app_data=APP_DATA):
         self.app_data = app_data
         self.cached = {}
+        self.compactions = {}
         self.fx_range = None
         self.fx_rates = {}
         self.fx_checked = 0
+        self.fx_fallback = False
 
     def read_conversation(self, path):
         stat = path.stat()
@@ -280,7 +337,9 @@ class Usage:
         version = (stat.st_mtime_ns, stat.st_size, wal_stat.st_mtime_ns if wal_stat else 0,
                    wal_stat.st_size if wal_stat else 0)
         if path not in self.cached or version != self.cached[path][0]:
-            self.cached[path] = (version, conversation_rows(path))
+            rows, compactions = conversation_rows(path)
+            self.cached[path] = (version, rows)
+            self.compactions[path.stem] = compactions
         return self.cached[path][1]
 
     def scan(self):
@@ -322,7 +381,8 @@ class Usage:
     def load_rates(self, first, last):
         start = (date.fromisoformat(first) - timedelta(days=7)).isoformat()
         bounds = start, last
-        if bounds == self.fx_range and time.monotonic() - self.fx_checked < (1800 if self.fx_rates else 60):
+        if bounds == self.fx_range and time.monotonic() - self.fx_checked < (
+                1800 if self.fx_rates and not self.fx_fallback else 60):
             return
         if not self.fx_range or bounds != self.fx_range:
             self.fx_rates = {}
@@ -331,6 +391,7 @@ class Usage:
             f"https://api.frankfurter.dev/v1/{start}..{last}?base=USD&symbols=CNY",
             headers={"User-Agent": "Antigravity-Usage-Dashboard/1.0"},
         )
+        cache = read_fx_cache()
         try:
             with DIRECT.open(request, timeout=6) as response:
                 rates = json.load(response)["rates"]
@@ -339,21 +400,48 @@ class Usage:
                 if isinstance(rate.get("CNY"), (int, float)) and 0 < rate["CNY"] < 100
             }
         except (OSError, URLError, KeyError, ValueError, TypeError):
-            pass
+            self.fx_rates = {}
+        self.fx_fallback = False
+        if self.fx_rates:
+            latest = max(self.fx_rates.items())
+            cache.update(range=list(bounds), rates=self.fx_rates, latest={"date": latest[0], "rate": latest[1]})
+            write_fx_cache(cache)
+            return
+        self.fx_fallback = True
+        saved = cache.get("rates")
+        if list(bounds) == cache.get("range") and isinstance(saved, dict) and saved:
+            self.fx_rates = {day: rate for day, rate in saved.items()
+                             if isinstance(rate, (int, float)) and 0 < rate < 100}
+            return
+        latest = cache.get("latest")
+        rate = latest.get("rate") if isinstance(latest, dict) else None
+        self.fx_rates = {start: rate if type(rate) in (int, float) and 0 < rate < 100 else FALLBACK_FX}
 
-    def report(self, start="", end="", conversation="", convert=False, only=False, catalog=None):
+    def report(self, start="", end="", conversation="", convert=False, only=False, catalog=None,
+               hours=0, day=False):
         start = date.fromisoformat(start).isoformat() if start else ""
         end = date.fromisoformat(end).isoformat() if end else ""
         if start and end and start > end:
             raise ValueError("开始日期晚于结束日期")
         if conversation and not UUID.fullmatch(conversation):
             raise ValueError("会话 ID 格式无效")
+        hours = max(0, min(int(hours or 0), 168))
+        moment_now = datetime.now(TZ)
+        if day:
+            start = end = moment_now.strftime("%Y-%m-%d")
+            cutoff = moment_now.strftime("%Y-%m-%dT00:00:00")
+            hours = 24
+        else:
+            cutoff = ((moment_now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+                      if hours else "")
         rows, titles, scanned, problems = self.scan()
         first, last = (rows[0]["day"], rows[-1]["day"]) if rows else ("", "")
         if convert and first:
             self.load_rates(first, last)
         fx_days = sorted(self.fx_rates) if convert else []
         by_session, daily, by_model = defaultdict(list), defaultdict(list), defaultdict(list)
+        hourly = defaultdict(list)
+        calendar = defaultdict(list)
         filtered = []
         selected = conversation or (rows[-1]["id"] if rows else "")
         for row in rows:
@@ -366,16 +454,35 @@ class Usage:
             row.update(usd=amount, cny=amount * rate if amount is not None and rate else None,
                        fx_date=fx_day, fx_rate=rate)
             by_session[row["id"]].append(row)
-            if (start and row["day"] < start) or (end and row["day"] > end) or (only and row["id"] != selected):
+            calendar[row["day"]].append(row)
+            if ((start and row["day"] < start) or (end and row["day"] > end)
+                    or (cutoff and row["time"][:19] < cutoff) or (only and row["id"] != selected)):
                 continue
             filtered.append(row)
             daily[row["day"]].append(row)
+            hourly[row["time"][:13].replace("T", " ") + ":00"].append(row)
             by_model[row["model"]].append(row)
-        sessions = sorted(
-            ({"id": key, "title": titles.get(key) or key[:8], "updated": group[-1]["time"],
-              "calls": len(group)} for key, group in by_session.items()),
-            key=lambda item: item["updated"], reverse=True,
-        )
+        daily_filled = []
+        if daily or start or end:
+            low = start or (min(daily) if daily else "")
+            high = end or (max(daily) if daily else "")
+            if low and high:
+                cursor = datetime.strptime(low, "%Y-%m-%d").date()
+                stop = datetime.strptime(high, "%Y-%m-%d").date()
+                while cursor <= stop:
+                    key = cursor.strftime("%Y-%m-%d")
+                    daily_filled.append((key, daily.get(key) or []))
+                    cursor += timedelta(days=1)
+        sessions = []
+        for key, group in by_session.items():
+            summary = aggregate(group)
+            sessions.append({
+                "id": key, "title": titles.get(key) or key[:8], "updated": group[-1]["time"],
+                "calls": len(group), "compactions": self.compactions.get(key, 0),
+                "total": summary["total"], "usd": summary["usd"],
+                "cny": summary["cny"], "unpriced": summary["unpriced"],
+            })
+        sessions.sort(key=lambda item: item["updated"], reverse=True)
         session_rows = by_session.get(selected, [])
         latest = None
         if session_rows:
@@ -383,18 +490,34 @@ class Usage:
             models = catalog or {}
             matches = catalog_selection(models, row["model"]) or catalog_selection(models, row["label"])
             latest = {**row, "model_limit": catalog_limit(matches)}
+        hourly_rows = []
+        if hours:
+            now = moment_now.replace(minute=0, second=0, microsecond=0)
+            span = (range(now.hour, -1, -1) if day else range(hours - 1, -1, -1))
+            for offset in span:
+                moment = now - timedelta(hours=offset)
+                key = moment.strftime("%Y-%m-%d %H:00")
+                hourly_rows.append({"day": key, "hour": moment.strftime("%H:00"),
+                                    **aggregate(hourly.get(key) or [])})
         return {
             "timezone": "UTC+08:00", "range": [first, last], "scanned": scanned, "unreadable": problems,
+            "granularity": "hour" if hours else "day", "hours": hours, "day_mode": bool(day),
+            "hourly": hourly_rows,
+            "calendar": [{"day": day, **aggregate(group)} for day, group in calendar.items()],
             "sessions": sessions, "selected": selected, "all": aggregate(filtered),
-            "session": aggregate(session_rows), "latest": latest,
+            "session": {**aggregate(session_rows), "compactions": self.compactions.get(selected, 0)},
+            "latest": latest,
             "recent": list(reversed(session_rows[-20:])),
-            "days": [{"day": day, **aggregate(group), "fx_date": group[0]["fx_date"],
-                      "fx_rate": group[0]["fx_rate"]} for day, group in daily.items()],
+            "days": [{"day": stamp, **aggregate(group),
+                      "fx_date": group[0]["fx_date"] if group else None,
+                      "fx_rate": group[0]["fx_rate"] if group else None}
+                     for stamp, group in daily_filled],
             "models": sorted(
                 [{"model": key, **aggregate(group)} for key, group in by_model.items()],
                 key=lambda item: item["total"], reverse=True,
             ),
-            "fx": {"enabled": convert, "available": bool(fx_days)},
+            "fx": {"enabled": convert, "available": bool(fx_days), "fallback": self.fx_fallback,
+                   "rate": self.fx_rates[max(self.fx_rates)] if self.fx_rates else None},
         }
 
 

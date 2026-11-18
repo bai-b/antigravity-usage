@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 11) return;
+  if (window[key]?.version === 20) return;
   window[key]?.remove();
-  const state = window[key] = { version: 11, request: null };
+  const state = window[key] = { version: 20, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -551,14 +551,19 @@
         }
         pill.button.detail=detail;
       };
-      const rounds=usage.turns == null ? "暂无数据" : value(usage.turns)+" 轮 "+value(usage.steps)+" 步";
+      const roundsMeta = usage.compactions == null ? "" : " · 压缩 "+value(usage.compactions)+" 次";
+      const rounds=usage.turns == null ? "暂无数据" : value(usage.turns)+" 轮 "+value(usage.steps)+" 步"+roundsMeta;
       assign(0, (usage.turns == null ? "会话 —" : value(usage.turns)+" 轮")
+        +(usage.compactions ? " · 压缩 "+value(usage.compactions)+" 次" : "")
         +(usage.speed == null ? "" : " · "+decimal(usage.speed)+" tok/s"), {
         title:"会话统计",value:rounds,rows:[
+          ["对话轮数 / 步骤",usage.turns == null ? "暂无数据" : value(usage.turns)+" 轮 "+value(usage.steps)+" 步"],
+          ["上下文压缩",usage.compactions == null ? "暂无数据" : value(usage.compactions)+" 次"],
           ["模型生成用时",duration(usage.model_seconds)],["工具调用用时",duration(usage.tool_seconds)],
           ["平均首 Token（TTFT）",usage.average_ttft == null ? "暂无数据" : decimal(usage.average_ttft)+" 秒"],
           ["最近输出速率",usage.speed == null ? "暂无数据" : decimal(usage.speed)+" tok/s"]
         ]}, [usage.turns == null ? "" : compact.format(usage.turns)+"轮",
+          usage.compactions ? "压缩"+compact.format(usage.compactions) : "",
           usage.speed == null ? "" : decimal(usage.speed)+"t/s"].filter(Boolean).join("·") || "—");
       assign(1, (usage.total == null ? "Token —" : compact.format(usage.total)+" tok")
         +(usage.hit == null ? "" : " · 命中 "+decimal(usage.hit)+"%"), {

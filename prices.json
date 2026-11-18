@@ -25,5 +25,13 @@
     "claude-sonnet-5-5": [
       {"from": "2026-10-12", "input": 2.00, "read": 0.20, "write": 2.50, "output": 10.00}
     ]
-  }
+  },
+  "aliases": {
+    "gemini-pro-orchestrator-argon": "gemini-4-argon",
+    "gemini-pro-orchestrator-carbon": "gemini-4-carbon",
+    "gemini-flash-worker-agy": "gemini-3.8-flash",
+    "gemini-4-hydrogen": "gemini-4-carbon",
+    "gemini-4-hydrogen-orchestrator": "gemini-4-hydrogen"
+  },
+  "alias_note": "Antigravity 的 orchestrator / worker / hydrogen 角色模型没有独立公开价，按等价公开模型计价。"
 }
