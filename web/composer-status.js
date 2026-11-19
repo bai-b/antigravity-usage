@@ -2,7 +2,7 @@
   const key = "__agyUsageStatus";
   if (window[key]?.version === 24) return;
   window[key]?.remove();
-  const state = window[key] = { version: 26, request: null };
+  const state = window[key] = { version: 27, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -47,8 +47,14 @@
   const styles = document.createElement("style");
   styles.textContent = `
     [data-agy-usage-slot] {flex:1 1 0px;min-width:0;height:24px;align-self:center;container:agy-usage-space / inline-size}
-    [data-agy-usage-status] {display:flex;justify-content:flex-end;align-items:center;gap:2px;height:100%;margin-inline:4px;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
-    [data-agy-usage-status][data-agy-usage-fit] {visibility:visible;gap:6px}
+    [data-agy-usage-status] {display:flex;justify-content:space-evenly;align-items:center;gap:2px;height:100%;width:100%;margin-inline:auto;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
+    [data-agy-usage-status][data-agy-usage-fit] {visibility:visible;gap:12px}
+    /* 均匀分布但限制带宽：读数少的时候不把三个小读头甩到两头去。 */
+    [data-agy-usage-status][data-agy-usage-fit="3"] {max-width:min(100%,30rem)}
+    [data-agy-usage-status][data-agy-usage-fit="2"] {max-width:min(100%,26rem)}
+    [data-agy-usage-status][data-agy-usage-fit="1"] {max-width:min(100%,13rem)}
+    [data-agy-usage-status][data-agy-usage-fit="0"] {max-width:min(100%,10rem)}
+    [data-agy-usage-status][data-agy-usage-fit="-1"],[data-agy-usage-status][data-agy-usage-fit="-2"] {justify-content:center;gap:6px}
     [data-agy-usage-status] button {font:inherit;color:inherit;white-space:nowrap;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
     [data-agy-usage-status] button:hover,[data-agy-usage-status] button:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-status] button:focus-visible {outline:1px solid var(--foreground,#888);outline-offset:-1px}
