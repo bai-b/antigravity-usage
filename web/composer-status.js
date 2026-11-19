@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 21) return;
+  if (window[key]?.version === 23) return;
   window[key]?.remove();
-  const state = window[key] = { version: 21, request: null };
+  const state = window[key] = { version: 23, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -76,6 +76,10 @@
     [data-agy-usage-preview] dd {display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-weight:500}
     [data-agy-usage-preview] dd span {white-space:nowrap}
   `;
+  // 旧版注入留下的同款基础样式一并清掉，重复注入不再累积。
+  for (const stale of document.querySelectorAll("style")) {
+    if (stale !== styles && stale.textContent.includes("[data-agy-usage-slot] {flex:1 1 0px")) stale.remove();
+  }
   document.head.append(styles);
   const decimal = v => v == null ? "暂无数据" : value(Math.round(v * 10) / 10);
   const duration = seconds => seconds == null ? "暂无数据" : seconds < 60
@@ -242,14 +246,16 @@
         widths.icons += base;
       }
       const selector = `#${slot.id} > [${attr}]`;
-      const icons = Math.ceil(widths.icons);
+      // 任何非零宽度都保留图标档，状态条不允许整条消失。
+      const icons = 1;
       const mini = Math.ceil(Math.max(widths.mini, icons + 1));
       const short = Math.ceil(Math.max(widths.short, mini + 1));
       const full = Math.ceil(Math.max(widths.full, widths.short, short + 1));
       // Let the browser apply the measured breakpoints in the same layout pass as resizing.
       responsiveRules.textContent = `
         @container agy-usage-space (width >= ${icons}px) {
-          ${selector} { visibility:visible; --agy-usage-density:icons; justify-content:flex-end; gap:6px }
+          ${selector} { visibility:visible; --agy-usage-density:icons; justify-content:flex-end; gap:2px }
+          ${selector} button { padding-inline:0 }
         }
         @container agy-usage-space (width >= ${mini}px) {
           ${selector} { --agy-usage-density:mini; justify-content:space-evenly; gap:0 }
@@ -265,8 +271,9 @@
           ${selector} .agy-usage-short { position:absolute; visibility:hidden }
           ${selector} .agy-usage-full { position:static; visibility:visible }
         }`;
+      slot.usage.measured = slot.getBoundingClientRect().width;
     }
-    slot.usage={pills,ring,paint,layout,destroy(){responsiveRules.remove();hide();popup.remove();pills[3].button.remove();
+    slot.usage={pills,ring,paint,layout,measured:0,destroy(){responsiveRules.remove();hide();popup.remove();pills[3].button.remove();
       document.removeEventListener("pointerdown",outside,true);document.removeEventListener("keydown",escape,true);}};
     return slot;
   }
@@ -429,7 +436,7 @@
       return;
     }
     if (group.lastElementChild === slot) return;
-    if (getComputedStyle(group).display !== "flex") return;
+    if (getComputedStyle(group).display !== "flex" && slot.parentElement !== group) return;
     // A zero-basis flex item occupies only the current spare width.
     group.append(slot);
   }
@@ -536,6 +543,12 @@
         bars.set(input, bar);
       }
       placeBar(input, bar);
+      // 宽度变化（窗口拖动、分屏动画、缩放）后重算断点，避免旧阈值把整条状态条留在隐藏档。
+      const slotWidth = bar.getBoundingClientRect().width;
+      if (Math.abs(slotWidth - (bar.usage.measured || 0)) > 1) {
+        bar.usage.measured = slotWidth;
+        bar.usage.layout(true);
+      }
       const callLimit = usage.call_limit ? value(usage.call_limit) + " Token" : "—";
       const modelLimit = usage.model_limit ? value(usage.model_limit) + " Token" : "—";
       const windowLimit = usage.model_limit ? capacity(usage.model_limit) : "—";
