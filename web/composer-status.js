@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 23) return;
+  if (window[key]?.version === 24) return;
   window[key]?.remove();
-  const state = window[key] = { version: 23, request: null };
+  const state = window[key] = { version: 24, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -231,34 +231,35 @@
     const summaries = pills.slice(0, 3);
     const responsiveRules = document.createElement("style");
     document.head.append(responsiveRules);
+    // 阈值只用固定度量算，避免「按当前档位量自己」导致阈值抖动。
+    const PADDING = 8, GAP = 4, OUTER = 8;
     function layout(readingsChanged = false) {
       if (!slot.isConnected || (!readingsChanged && responsiveRules.textContent)) return;
-      const widths = {full:20, short:20, mini:20, icons:20}; // 8px outer margin plus space between buttons.
-      for (const {button, icon, text, short, mini} of summaries) {
-        const css = getComputedStyle(button);
-        const padding = parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
-        const gap = parseFloat(css.columnGap) || 0;
-        const base = icon.getBoundingClientRect().width + padding;
-        const withLabel = base + gap;
+      const widths = {full:OUTER * 2, short:OUTER * 2, mini:OUTER * 2};
+      for (const {icon, text, short, mini} of summaries) {
+        const withLabel = icon.getBoundingClientRect().width + PADDING + GAP;
         widths.full += withLabel + text.getBoundingClientRect().width;
         widths.short += withLabel + short.getBoundingClientRect().width;
         widths.mini += withLabel + mini.getBoundingClientRect().width;
-        widths.icons += base;
       }
       const selector = `#${slot.id} > [${attr}]`;
-      // 任何非零宽度都保留图标档，状态条不允许整条消失。
-      const icons = 1;
-      const mini = Math.ceil(Math.max(widths.mini, icons + 1));
+      // 最窄一档也保留可读内容：上下文圆环 + 百分比，绝不只剩光秃秃的图标。
+      const micro = 1;
+      const mini = Math.ceil(Math.max(widths.mini, micro + 1));
       const short = Math.ceil(Math.max(widths.short, mini + 1));
       const full = Math.ceil(Math.max(widths.full, widths.short, short + 1));
       // Let the browser apply the measured breakpoints in the same layout pass as resizing.
       responsiveRules.textContent = `
-        @container agy-usage-space (width >= ${icons}px) {
-          ${selector} { visibility:visible; --agy-usage-density:icons; justify-content:flex-end; gap:2px }
+        @container agy-usage-space (width >= ${micro}px) {
+          ${selector} { visibility:visible; --agy-usage-density:micro; justify-content:flex-end; gap:2px }
           ${selector} button { padding-inline:0 }
+          ${selector} button:nth-child(1), ${selector} button:nth-child(2) { position:absolute; visibility:hidden; pointer-events:none }
+          ${selector} button:nth-child(3) .agy-usage-mini { position:static; visibility:visible }
         }
         @container agy-usage-space (width >= ${mini}px) {
           ${selector} { --agy-usage-density:mini; justify-content:space-evenly; gap:0 }
+          ${selector} button { padding-inline:4px }
+          ${selector} button:nth-child(1), ${selector} button:nth-child(2) { position:relative; visibility:visible; pointer-events:auto }
           ${selector} .agy-usage-mini { position:static; visibility:visible }
         }
         @container agy-usage-space (width >= ${short}px) {
@@ -273,7 +274,13 @@
         }`;
       slot.usage.measured = slot.getBoundingClientRect().width;
     }
-    slot.usage={pills,ring,paint,layout,measured:0,destroy(){responsiveRules.remove();hide();popup.remove();pills[3].button.remove();
+    // 分屏、缩放、面板开合都走这里，阈值不会停在上一次的宽度上。
+    const observer = new ResizeObserver(() => {
+      const width = slot.getBoundingClientRect().width;
+      if (Math.abs(width - slot.usage.measured) > 1) { slot.usage.measured = width; layout(true); }
+    });
+    observer.observe(slot);
+    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();responsiveRules.remove();hide();popup.remove();pills[3].button.remove();
       document.removeEventListener("pointerdown",outside,true);document.removeEventListener("keydown",escape,true);}};
     return slot;
   }
