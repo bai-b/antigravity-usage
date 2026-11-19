@@ -107,7 +107,8 @@ def build_source_zip(version):
 
 def artifacts(version):
     base = "antigravity-usage-" + version
-    return [DIST / (base + "-win-x64.zip"), DIST / (base + "-source-update.zip")]
+    return [DIST / (base + "-win-x64.zip"), DIST / (base + "-win-x64.zip.sha256"),
+            DIST / (base + "-source-update.zip")]
 
 
 def digest(path):
