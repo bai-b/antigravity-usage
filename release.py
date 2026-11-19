@@ -309,7 +309,9 @@ def publish(owner, repo, tag, version, files, notes_file, token, force_upload, d
     current = {asset["name"]: asset for asset in release.get("assets", [])}
     for item in files:
         asset = current.get(item.name)
-        if asset and asset["size"] == item.stat().st_size and not force_upload:
+        # 校验文件大小恒定，内容却随安装包变化，必须每次重传。
+        if (asset and asset["size"] == item.stat().st_size and not force_upload
+                and not item.name.endswith(".sha256")):
             say("跳过 " + item.name + "（已上传，大小一致）")
             continue
         if dry:
