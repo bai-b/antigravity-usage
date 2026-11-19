@@ -2,7 +2,7 @@
   const key = "__agyUsageStatus";
   if (window[key]?.version === 24) return;
   window[key]?.remove();
-  const state = window[key] = { version: 24, request: null };
+  const state = window[key] = { version: 25, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -47,13 +47,22 @@
   const styles = document.createElement("style");
   styles.textContent = `
     [data-agy-usage-slot] {flex:1 1 0px;min-width:0;height:24px;align-self:center;container:agy-usage-space / inline-size}
-    [data-agy-usage-status] {display:flex;justify-content:space-evenly;align-items:center;height:100%;margin-inline:4px;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
+    [data-agy-usage-status] {display:flex;justify-content:space-evenly;align-items:center;gap:2px;height:100%;margin-inline:4px;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
+    [data-agy-usage-status][data-agy-usage-fit] {visibility:visible;gap:6px}
     [data-agy-usage-status] button {font:inherit;color:inherit;white-space:nowrap;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
     [data-agy-usage-status] button:hover,[data-agy-usage-status] button:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-status] button:focus-visible {outline:1px solid var(--foreground,#888);outline-offset:-1px}
     [data-agy-usage-status] .agy-usage-pill {position:relative;display:inline-flex;align-items:center;gap:4px;flex:none}
     [data-agy-usage-status] .agy-usage-icon {display:grid;place-items:center;flex:none}
-    [data-agy-usage-status] .agy-usage-reading {position:absolute;left:0;visibility:hidden;width:max-content;pointer-events:none}
+    [data-agy-usage-status] .agy-usage-reading {display:none;white-space:nowrap;pointer-events:none}
+    [data-agy-usage-status][data-agy-usage-fit="3"] .agy-usage-full {display:inline}
+    [data-agy-usage-status][data-agy-usage-fit="2"] .agy-usage-short {display:inline}
+    [data-agy-usage-status][data-agy-usage-fit="1"] .agy-usage-mini,
+    [data-agy-usage-status][data-agy-usage-fit="0"] .agy-usage-mini,
+    [data-agy-usage-status][data-agy-usage-fit="-1"] .agy-usage-mini {display:inline}
+    [data-agy-usage-status][data-agy-usage-fit="0"] .agy-usage-pill:nth-child(1) {display:none}
+    [data-agy-usage-status][data-agy-usage-fit="-1"] .agy-usage-pill:nth-child(-n+2),
+    [data-agy-usage-status][data-agy-usage-fit="-2"] .agy-usage-pill:nth-child(-n+2) {display:none}
     [data-agy-usage-launcher] {display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--foreground,CanvasText);cursor:pointer;font-size:12px;white-space:nowrap;-webkit-app-region:no-drag}
     [data-agy-usage-launcher]:hover,[data-agy-usage-launcher]:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-launcher]:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
@@ -229,58 +238,31 @@
     document.addEventListener("pointerdown",outside,true);
     document.addEventListener("keydown",escape,true);
     const summaries = pills.slice(0, 3);
-    const responsiveRules = document.createElement("style");
-    document.head.append(responsiveRules);
-    // 阈值只用固定度量算，避免「按当前档位量自己」导致阈值抖动。
-    const PADDING = 8, GAP = 4, OUTER = 8;
-    function layout(readingsChanged = false) {
-      if (!slot.isConnected || (!readingsChanged && responsiveRules.textContent)) return;
-      const widths = {full:OUTER * 2, short:OUTER * 2, mini:OUTER * 2};
-      for (const {icon, text, short, mini} of summaries) {
-        const withLabel = icon.getBoundingClientRect().width + PADDING + GAP;
-        widths.full += withLabel + text.getBoundingClientRect().width;
-        widths.short += withLabel + short.getBoundingClientRect().width;
-        widths.mini += withLabel + mini.getBoundingClientRect().width;
+    // 不再估宽度、不再切档案档：先摆最丰富的一档，量真实占用，放不下才降一档。
+    const FIT_LEVELS = ["3", "2", "1", "0", "-1", "-2"];
+    const needed = () => {
+      const kids = [...bar.children].filter(child => child.getClientRects().length);
+      const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+      return kids.reduce((total, child) => total + child.getBoundingClientRect().width, 0)
+        + gap * Math.max(0, kids.length - 1);
+    };
+    const fits = level => {
+      bar.setAttribute("data-agy-usage-fit", level);
+      return needed() <= bar.clientWidth;
+    };
+    function layout() {
+      if (!slot.isConnected || !bar.isConnected || !bar.clientWidth) return;
+      const start = Math.max(0, FIT_LEVELS.indexOf(bar.getAttribute("data-agy-usage-fit") || "") - 1);
+      for (let index = start; index < FIT_LEVELS.length; index++) {
+        if (fits(FIT_LEVELS[index])) break;
       }
-      const selector = `#${slot.id} > [${attr}]`;
-      // 最窄一档也保留可读内容：上下文圆环 + 百分比，绝不只剩光秃秃的图标。
-      const micro = 1;
-      const mini = Math.ceil(Math.max(widths.mini, micro + 1));
-      const short = Math.ceil(Math.max(widths.short, mini + 1));
-      const full = Math.ceil(Math.max(widths.full, widths.short, short + 1));
-      // Let the browser apply the measured breakpoints in the same layout pass as resizing.
-      responsiveRules.textContent = `
-        @container agy-usage-space (width >= ${micro}px) {
-          ${selector} { visibility:visible; --agy-usage-density:micro; justify-content:flex-end; gap:2px }
-          ${selector} button { padding-inline:0 }
-          ${selector} button:nth-child(1), ${selector} button:nth-child(2) { position:absolute; visibility:hidden; pointer-events:none }
-          ${selector} button:nth-child(3) .agy-usage-mini { position:static; visibility:visible }
-        }
-        @container agy-usage-space (width >= ${mini}px) {
-          ${selector} { --agy-usage-density:mini; justify-content:space-evenly; gap:0 }
-          ${selector} button { padding-inline:4px }
-          ${selector} button:nth-child(1), ${selector} button:nth-child(2) { position:relative; visibility:visible; pointer-events:auto }
-          ${selector} .agy-usage-mini { position:static; visibility:visible }
-        }
-        @container agy-usage-space (width >= ${short}px) {
-          ${selector} { --agy-usage-density:short }
-          ${selector} .agy-usage-mini { position:absolute; visibility:hidden }
-          ${selector} .agy-usage-short { position:static; visibility:visible }
-        }
-        @container agy-usage-space (width >= ${full}px) {
-          ${selector} { --agy-usage-density:full }
-          ${selector} .agy-usage-short { position:absolute; visibility:hidden }
-          ${selector} .agy-usage-full { position:static; visibility:visible }
-        }`;
-      slot.usage.measured = slot.getBoundingClientRect().width;
+      bar.style.setProperty("--agy-usage-density", bar.getAttribute("data-agy-usage-fit"));
+      slot.usage.measured = bar.clientWidth;
     }
-    // 分屏、缩放、面板开合都走这里，阈值不会停在上一次的宽度上。
-    const observer = new ResizeObserver(() => {
-      const width = slot.getBoundingClientRect().width;
-      if (Math.abs(width - slot.usage.measured) > 1) { slot.usage.measured = width; layout(true); }
-    });
+    // 分屏、缩放、面板开合、读数变化都会重新量一次，按需降档。
+    const observer = new ResizeObserver(() => layout());
     observer.observe(slot);
-    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();responsiveRules.remove();hide();popup.remove();pills[3].button.remove();
+    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();hide();popup.remove();pills[3].button.remove();
       document.removeEventListener("pointerdown",outside,true);document.removeEventListener("keydown",escape,true);}};
     return slot;
   }
@@ -554,7 +536,7 @@
       const slotWidth = bar.getBoundingClientRect().width;
       if (Math.abs(slotWidth - (bar.usage.measured || 0)) > 1) {
         bar.usage.measured = slotWidth;
-        bar.usage.layout(true);
+        bar.usage.layout();
       }
       const callLimit = usage.call_limit ? value(usage.call_limit) + " Token" : "—";
       const modelLimit = usage.model_limit ? value(usage.model_limit) + " Token" : "—";
@@ -571,22 +553,14 @@
         return [label + " " + remaining, quota.group + " · " + label + "剩余 " + remaining + reset];
       };
       const stats=bar.usage.pills;
-      let readingsChanged = false;
       const assign=(index,text,detail,short=text,mini=short)=>{
         const pill=stats[index];
         if (pill.text.textContent!==text) {
           pill.text.textContent=text;
           pill.button.setAttribute("aria-label",text&&text!=="—" ? pill.name+"："+text : pill.name);
-          if (index < 3) readingsChanged = true;
         }
-        if (index < 3 && pill.short.textContent!==short) {
-          pill.short.textContent=short;
-          readingsChanged = true;
-        }
-        if (index < 3 && pill.mini.textContent!==mini) {
-          pill.mini.textContent=mini;
-          readingsChanged = true;
-        }
+        if (index < 3 && pill.short.textContent!==short) pill.short.textContent=short;
+        if (index < 3 && pill.mini.textContent!==mini) pill.mini.textContent=mini;
         pill.button.detail=detail;
       };
       const roundsMeta = usage.compactions == null ? "" : " · 压缩 "+value(usage.compactions)+" 次";
@@ -630,7 +604,7 @@
       assign(3,periods.map(item=>item[0]).join(" · "),{
         title:"剩余额度",value:quota?.group||"",rows:periods.map(item=>[item[0],item[1].split("北京时间 ")[1]||"暂无重置时间"])
       });
-      bar.usage.layout(readingsChanged);
+      bar.usage.layout();
       bar.usage.paint();
       const fraction = Math.max(0, Math.min(100, usage.context || 0));
       const ink = usage.context >= 100 ? "#d47743" : "light-dark(#3c63b4,#9eb7f3)";
