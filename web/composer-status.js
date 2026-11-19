@@ -2,7 +2,7 @@
   const key = "__agyUsageStatus";
   if (window[key]?.version === 24) return;
   window[key]?.remove();
-  const state = window[key] = { version: 25, request: null };
+  const state = window[key] = { version: 26, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -47,7 +47,7 @@
   const styles = document.createElement("style");
   styles.textContent = `
     [data-agy-usage-slot] {flex:1 1 0px;min-width:0;height:24px;align-self:center;container:agy-usage-space / inline-size}
-    [data-agy-usage-status] {display:flex;justify-content:space-evenly;align-items:center;gap:2px;height:100%;margin-inline:4px;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
+    [data-agy-usage-status] {display:flex;justify-content:flex-end;align-items:center;gap:2px;height:100%;margin-inline:4px;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
     [data-agy-usage-status][data-agy-usage-fit] {visibility:visible;gap:6px}
     [data-agy-usage-status] button {font:inherit;color:inherit;white-space:nowrap;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
     [data-agy-usage-status] button:hover,[data-agy-usage-status] button:focus-visible {background:var(--secondary,#8882)}
@@ -246,23 +246,40 @@
       return kids.reduce((total, child) => total + child.getBoundingClientRect().width, 0)
         + gap * Math.max(0, kids.length - 1);
     };
-    const fits = level => {
+    // 降档不留余量、升档要留余量：右侧 Turbo/麦克风/停止按钮在流式输出时会显隐，
+    // 那几像素的抖动不该让读数来回跳档。
+    const HOLD = 0, RAISE = 12, READABLE = 30;
+    const fits = (level, slack = 0) => {
       bar.setAttribute("data-agy-usage-fit", level);
-      return needed() <= bar.clientWidth;
+      return needed() + slack <= bar.clientWidth;
     };
     function layout() {
       if (!slot.isConnected || !bar.isConnected || !bar.clientWidth) return;
-      const start = Math.max(0, FIT_LEVELS.indexOf(bar.getAttribute("data-agy-usage-fit") || "") - 1);
-      for (let index = start; index < FIT_LEVELS.length; index++) {
-        if (fits(FIT_LEVELS[index])) break;
+      const current = FIT_LEVELS.indexOf(bar.getAttribute("data-agy-usage-fit") || "");
+      let chosen = FIT_LEVELS.length - 1;
+      if (current >= 0 && fits(FIT_LEVELS[current], HOLD)) chosen = current;
+      else {
+        for (let index = Math.max(0, current); index < FIT_LEVELS.length; index++) {
+          if (fits(FIT_LEVELS[index])) { chosen = index; break; }
+        }
       }
-      bar.style.setProperty("--agy-usage-density", bar.getAttribute("data-agy-usage-fit"));
+      for (let index = chosen - 1; index >= 0; index--) {
+        if (fits(FIT_LEVELS[index], RAISE)) { chosen = index; break; }
+      }
+      // 圆环孤零零挂着读不出信息：只要还有 30px，就保留「圆环 + 百分比」。
+      if (chosen === FIT_LEVELS.length - 1 && bar.clientWidth >= READABLE) chosen = FIT_LEVELS.length - 2;
+      bar.setAttribute("data-agy-usage-fit", FIT_LEVELS[chosen]);
+      bar.style.setProperty("--agy-usage-density", FIT_LEVELS[chosen]);
       slot.usage.measured = bar.clientWidth;
     }
     // 分屏、缩放、面板开合、读数变化都会重新量一次，按需降档。
     const observer = new ResizeObserver(() => layout());
     observer.observe(slot);
-    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();hide();popup.remove();pills[3].button.remove();
+    // 字体加载完成、页面缩放变化后字宽会变，重新量一次，跨机器字宽差异不会卡在旧档位。
+    const relayout = () => layout();
+    window.addEventListener("resize", relayout);
+    document.fonts?.ready.then(relayout).catch(() => {});
+    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();window.removeEventListener("resize", relayout);hide();popup.remove();pills[3].button.remove();
       document.removeEventListener("pointerdown",outside,true);document.removeEventListener("keydown",escape,true);}};
     return slot;
   }

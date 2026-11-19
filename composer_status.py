@@ -277,7 +277,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 25 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 26 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))

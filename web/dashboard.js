@@ -1,5 +1,5 @@
 (() => {
-const VERSION = 25;
+const VERSION = 26;
 function createDashboard(root, load, initialConversation) {
 const $ = id => root.querySelector("#" + id);
 const NS = "http://www.w3.org/2000/svg";
