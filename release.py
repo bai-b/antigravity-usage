@@ -123,9 +123,8 @@ def sync_gitignore(version, dry):
         "dist/*/",
         "dist/*.zip",
         "dist/*.sha256",
-        "!dist/antigravity-usage-" + version + "-win-x64.zip",
+        # 大体积 zip 只留在 dist/ 与 GitHub Release，不写进 git 历史。
         "!dist/antigravity-usage-" + version + "-win-x64.zip.sha256",
-        "!dist/antigravity-usage-" + version + "-source-update.zip",
         END,
     ])
     if BEGIN in text and END in text:
@@ -142,9 +141,7 @@ def sync_gitignore(version, dry):
 
 
 def prune_old_artifacts(version, dry):
-    keep = {"dist/antigravity-usage-" + version + "-win-x64.zip",
-            "dist/antigravity-usage-" + version + "-win-x64.zip.sha256",
-            "dist/antigravity-usage-" + version + "-source-update.zip"}
+    keep = {"dist/antigravity-usage-" + version + "-win-x64.zip.sha256"}
     tracked = [line for line in git("ls-files", "dist").splitlines() if line.strip()]
     stale = [item for item in tracked if item not in keep]
     if stale:

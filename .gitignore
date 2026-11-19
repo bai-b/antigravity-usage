@@ -7,7 +7,6 @@ __pycache__/
 dist/*/
 dist/*.zip
 dist/*.sha256
-!dist/antigravity-usage-1.1.19-win-x64.zip
+# 大体积 zip 只留在 dist/ 与 GitHub Release，不写进 git 历史。
 !dist/antigravity-usage-1.1.19-win-x64.zip.sha256
-!dist/antigravity-usage-1.1.19-source-update.zip
 # <<< agy-release managed <<<
