@@ -322,7 +322,7 @@ def publish(owner, repo, tag, version, files, notes_file, token, force_upload, d
                           data=item.read_bytes(), method="POST",
                           headers={"Authorization": "Bearer " + token, "Content-Type": "application/zip",
                                    "User-Agent": "agy-release", "Accept": "application/vnd.github+json"})
-        with urlopen(request, timeout=300) as response:
+        with OPENER.open(request, timeout=300) as response:
             uploaded = json.loads(response.read())
         say("上传 " + item.name + "  " + format(uploaded["size"], ",") + " 字节  sha256 " + digest(item)[:16] + "...")
         release = api("GET", "/repos/" + owner + "/" + repo + "/releases/" + str(release["id"]), token=token)
