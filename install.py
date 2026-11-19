@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import subprocess
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 import time
 
@@ -21,8 +22,51 @@ DESTINATION = PLUGINS / "agy-usage"
 SIDECAR_ID = "agy-usage/composer"
 MARKER = ".agy-usage-release"
 PORT = 43827
-PAYLOAD = ("plugin.json", "composer_status.py", "usage.py", "dashboard.py", "prices.json",
+PAYLOAD = ("plugin.json", "composer_status.py", "cdp_guard.py", "usage.py", "dashboard.py", "prices.json",
            "mcp_config.json", "web", "skills", "runtime")
+
+
+def ensure_debug_port():
+    """给 Antigravity 快捷方式补上 CDP 端口，否则面板无法注入桌面端渲染页面。"""
+    if os.name != "nt":
+        return
+    profile = os.environ.get("USERPROFILE")
+    appdata = os.environ.get("APPDATA")
+    if not profile or not appdata:
+        return
+    shortcuts = (
+        Path(profile) / "Desktop" / "Antigravity.lnk",
+        Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Antigravity.lnk",
+        Path(appdata) / "Microsoft" / "Internet Explorer" / "Quick Launch" / "User Pinned" / "TaskBar" / "Antigravity.lnk",
+    )
+    listing = ", ".join("'" + str(item).replace("'", "''") + "'" for item in shortcuts)
+    script = (
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        "foreach ($p in @(" + listing + ")) {\n"
+        "  if (Test-Path -LiteralPath $p) {\n"
+        "    $s = (New-Object -ComObject WScript.Shell).CreateShortcut($p)\n"
+        "    if ($s.Arguments -notmatch 'remote-debugging-port') {\n"
+        "      $s.Arguments = '--remote-debugging-port=0'\n"
+        "      $s.Save()\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = None
+    try:
+        with NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8-sig") as handle:
+            handle.write(script)
+            path = handle.name
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path],
+                       capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        if path:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def save_settings(enabled):
@@ -185,6 +229,7 @@ def install():
     if (DESTINATION / MARKER).exists() and (DESTINATION / MARKER).read_text(encoding="ascii") == version:
         save_settings(True)
         manage_sidecar("ENABLE")
+        ensure_debug_port()
         return
     PLUGINS.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".agy-usage-setup-", dir=CONFIG) as directory:
@@ -227,6 +272,7 @@ def install():
                 manage_sidecar("ENABLE")
             raise
     manage_sidecar("ENABLE")
+    ensure_debug_port()
 
 
 def uninstall():

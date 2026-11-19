@@ -34,7 +34,7 @@ CLIENT_ID = "178c6fc778ccc68e1d6a"
 CONFIG = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "agy-release" / "config.json"
 BEGIN = "# >>> agy-release managed >>>"
 END = "# <<< agy-release managed <<<"
-SOURCE_FILES = ("README.md", "install.py", "plugin.json", "composer_status.py", "usage.py",
+SOURCE_FILES = ("README.md", "install.py", "plugin.json", "composer_status.py", "cdp_guard.py", "usage.py",
                 "dashboard.py", "prices.json")
 
 

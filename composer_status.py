@@ -16,6 +16,12 @@ from urllib.parse import urlsplit
 
 from websocket import WebSocketException, create_connection
 
+try:
+    from cdp_guard import heal
+except ImportError:  # older installs ship without the self-heal module
+    def heal():
+        return None
+
 from usage import (APP_DATA, LOOPBACK, ROOT, UUID, Usage, catalog_limit, catalog_selection,
                    count_tokens, latest_usd_cny, model_catalog, model_label, quota_snapshot, quotas_by_model,
                    reference_total)
@@ -229,6 +235,10 @@ def poll(guard):
                 targets = desktop_pages()
             except (OSError, ValueError, IndexError):
                 targets = {}
+                try:
+                    heal()
+                except Exception:
+                    LOG.debug("inspector self-heal failed", exc_info=True)
             now = time.monotonic()
             if rate_job is not None and rate_job.done():
                 quote = rate_job.result()
