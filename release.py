@@ -24,9 +24,12 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parent
+# Talk to the API directly: the system proxy bypass list can hold patterns Python cannot compile
+# (such as "+.example.com"), which aborts urllib before the request is sent.
+OPENER = build_opener(ProxyHandler({}))
 DIST = ROOT / "dist"
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
@@ -192,7 +195,7 @@ def api(method, path, body=None, raw=None, content_type="application/json", host
         headers["Content-Type"] = content_type
     request = Request(host + path, data=data, method=method, headers=headers)
     try:
-        with urlopen(request, timeout=180) as response:
+        with OPENER.open(request, timeout=180) as response:
             payload = response.read()
             return json.loads(payload) if payload else {}
     except HTTPError as error:
