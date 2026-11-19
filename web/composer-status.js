@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 20) return;
+  if (window[key]?.version === 21) return;
   window[key]?.remove();
-  const state = window[key] = { version: 20, request: null };
+  const state = window[key] = { version: 21, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -188,13 +188,17 @@
           : "M20 5c0 2-4 3-8 3S4 7 4 5s4-3 8-3 8 1 8 3ZM4 5v14c0 2 4 3 8 3s8-1 8-3V5M4 12c0 2 4 3 8 3s8-1 8-3");
         svg.append(path);icon.append(svg);
       }
-      const text=document.createElement("span");text.className="agy-usage-reading agy-usage-full";text.textContent="—";
-      const short=document.createElement("span");short.className="agy-usage-reading agy-usage-short";short.textContent="—";
+      const reading=name=>{
+        const span=document.createElement("span");
+        span.className="agy-usage-reading agy-usage-"+name;
+        span.textContent="—";
+        return span;
+      };
+      const text=reading("full"), short=reading("short"), mini=reading("mini");
       if(index===3) button.append(text);
       else {
-        text.setAttribute("aria-hidden", "true");
-        short.setAttribute("aria-hidden", "true");
-        button.append(icon,text,short);
+        for (const span of [text, short, mini]) span.setAttribute("aria-hidden", "true");
+        button.append(icon,text,short,mini);
       }
       button.addEventListener("pointerenter",()=>show(button));
       button.addEventListener("pointerleave",closeSoon);
@@ -206,7 +210,7 @@
         else {pinned=false;show(button);pinned=true;}
       });
       if(index<3) bar.append(button);
-      return {button,text,short,icon,name};
+      return {button,text,short,mini,icon,name};
     });
     const ring=pills[2].icon;
     style(ring,{width:"12px",height:"12px",flexShrink:"0",borderRadius:"50%",position:"relative",
@@ -225,30 +229,40 @@
     document.head.append(responsiveRules);
     function layout(readingsChanged = false) {
       if (!slot.isConnected || (!readingsChanged && responsiveRules.textContent)) return;
-      const widths = {full:20, short:20, icons:20}; // 8px outer margin plus space between buttons.
-      for (const {button, icon, text, short} of summaries) {
+      const widths = {full:20, short:20, mini:20, icons:20}; // 8px outer margin plus space between buttons.
+      for (const {button, icon, text, short, mini} of summaries) {
         const css = getComputedStyle(button);
         const padding = parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
+        const gap = parseFloat(css.columnGap) || 0;
         const base = icon.getBoundingClientRect().width + padding;
-        const withLabel = base + parseFloat(css.columnGap);
+        const withLabel = base + gap;
         widths.full += withLabel + text.getBoundingClientRect().width;
         widths.short += withLabel + short.getBoundingClientRect().width;
+        widths.mini += withLabel + mini.getBoundingClientRect().width;
         widths.icons += base;
       }
       const selector = `#${slot.id} > [${attr}]`;
-      const full = Math.ceil(Math.max(widths.full, widths.short));
-      const short = Math.ceil(widths.short);
+      const icons = Math.ceil(widths.icons);
+      const mini = Math.ceil(Math.max(widths.mini, icons + 1));
+      const short = Math.ceil(Math.max(widths.short, mini + 1));
+      const full = Math.ceil(Math.max(widths.full, widths.short, short + 1));
       // Let the browser apply the measured breakpoints in the same layout pass as resizing.
       responsiveRules.textContent = `
-        @container agy-usage-space (width >= ${Math.ceil(widths.icons)}px) {
-          ${selector} { visibility:visible; --agy-usage-density:icons }
+        @container agy-usage-space (width >= ${icons}px) {
+          ${selector} { visibility:visible; --agy-usage-density:icons; justify-content:flex-end; gap:6px }
         }
-        @container agy-usage-space (${short}px <= width < ${full}px) {
+        @container agy-usage-space (width >= ${mini}px) {
+          ${selector} { --agy-usage-density:mini; justify-content:space-evenly; gap:0 }
+          ${selector} .agy-usage-mini { position:static; visibility:visible }
+        }
+        @container agy-usage-space (width >= ${short}px) {
           ${selector} { --agy-usage-density:short }
+          ${selector} .agy-usage-mini { position:absolute; visibility:hidden }
           ${selector} .agy-usage-short { position:static; visibility:visible }
         }
         @container agy-usage-space (width >= ${full}px) {
           ${selector} { --agy-usage-density:full }
+          ${selector} .agy-usage-short { position:absolute; visibility:hidden }
           ${selector} .agy-usage-full { position:static; visibility:visible }
         }`;
     }
@@ -538,7 +552,7 @@
       };
       const stats=bar.usage.pills;
       let readingsChanged = false;
-      const assign=(index,text,detail,short=text)=>{
+      const assign=(index,text,detail,short=text,mini=short)=>{
         const pill=stats[index];
         if (pill.text.textContent!==text) {
           pill.text.textContent=text;
@@ -547,6 +561,10 @@
         }
         if (index < 3 && pill.short.textContent!==short) {
           pill.short.textContent=short;
+          readingsChanged = true;
+        }
+        if (index < 3 && pill.mini.textContent!==mini) {
+          pill.mini.textContent=mini;
           readingsChanged = true;
         }
         pill.button.detail=detail;
@@ -564,7 +582,8 @@
           ["最近输出速率",usage.speed == null ? "暂无数据" : decimal(usage.speed)+" tok/s"]
         ]}, [usage.turns == null ? "" : compact.format(usage.turns)+"轮",
           usage.compactions ? "压缩"+compact.format(usage.compactions) : "",
-          usage.speed == null ? "" : decimal(usage.speed)+"t/s"].filter(Boolean).join("·") || "—");
+          usage.speed == null ? "" : decimal(usage.speed)+"t/s"].filter(Boolean).join("·") || "—",
+          usage.turns == null ? "—" : compact.format(usage.turns)+"轮");
       assign(1, (usage.total == null ? "Token —" : compact.format(usage.total)+" tok")
         +(usage.hit == null ? "" : " · 命中 "+decimal(usage.hit)+"%"), {
         title:"Token 用量",value:value(usage.total)+" tok",rows:[
@@ -572,7 +591,8 @@
           ["未缓存输入",value(usage.uncached)+" tok"],["缓存读取",value(usage.cached)+" tok"],
           ["缓存写入",value(usage.written)+" tok"],["输出",value(usage.output)+" tok"]
         ]}, [usage.total == null ? "" : compact.format(usage.total),
-          usage.hit == null ? "" : decimal(usage.hit)+"%"].filter(Boolean).join("·") || "—");
+          usage.hit == null ? "" : decimal(usage.hit)+"%"].filter(Boolean).join("·") || "—",
+          usage.total == null ? "—" : compact.format(usage.total));
       const contextReading = [context, contextPercent].filter(Boolean).join(" · ");
       assign(2,contextReading,{
         title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
@@ -583,7 +603,8 @@
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
           : (usage.call_model ? "最近一次调用 · "+usage.call_model : "") + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
-      },[context, contextPercent].filter(Boolean).join("·"));
+      },[context, contextPercent].filter(Boolean).join("·"),
+        usage.context != null ? Math.round(usage.context)+"%" : windowLimit);
       const periods=[period("5h","5h"),period("weekly","周")].filter(Boolean);
       stats[3].button.hidden=!periods.length;
       assign(3,periods.map(item=>item[0]).join(" · "),{
