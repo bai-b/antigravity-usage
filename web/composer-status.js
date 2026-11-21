@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 47) return;
+  if (window[key]?.version === 48) return;
   window[key]?.remove();
-  const state = window[key] = { version: 47, request: null };
+  const state = window[key] = { version: 48, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -684,7 +684,8 @@
       const limit = usage.context_limit || usage.model_limit;
       const windowLimit = limit ? capacity(limit) : "—";
       const context = usage.used != null
-        ? compact.format(usage.used) + "/" + windowLimit : windowLimit;
+        ? compact.format(usage.used) + "/" + windowLimit
+        : (usage.waiting_for_call && limit ? "≈" + windowLimit : windowLimit);
       const contextPercent = usage.context != null ? decimal(usage.context) + "%" : "";
       const period = (window, label) => {
         const bucket = quota?.buckets.find(item => item.window === window);
@@ -730,11 +731,14 @@
         title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
         rows:[["已用（调用估算）",usage.used == null ? "—" : value(usage.used)+" Token"],
           [usage.used == null ? "所选模型窗口" : "计算采用的窗口",limit ? value(limit)+" Token" : "—"],
+          ...(usage.clamped && usage.call_limit ? [["本次调用记录上限",value(usage.call_limit)+" Token"]] : []),
           ...(usage.model_limit && limit !== usage.model_limit ? [["模型目录上限",modelLimit]] : []),
           ...(windowMode ? [["所选上下文模式",windowMode]] : []),
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
-          : (usage.call_model ? "最近一次调用 · "+usage.call_model : "") + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
+          : (usage.call_model ? "最近一次调用 · "+usage.call_model : "")
+            + (usage.clamped ? " · 超出记录上限，按已用量计" : "")
+            + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
       }, contextPercent || context || "—");
       const periods=[period("5h","5h"),period("weekly","周")].filter(Boolean);
       stats[3].button.hidden=!periods.length;

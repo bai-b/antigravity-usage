@@ -136,9 +136,14 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
     configured = catalog_limit(selection)
     call_limit = recent.get("limit") if use_recent else None
     context_limit = (call_limit or catalog_limit(actual_selection) or configured) if used is not None else configured
+    # A stored call limit can lag behind a later, wider call for the same
+    # model, so never report more than a full window.
+    clamped = bool(used is not None and context_limit and used > context_limit)
+    if clamped:
+        context_limit = used
     return {
         "context": round(100 * used / context_limit, 1) if used is not None and context_limit else None,
-        "used": used, "model_limit": configured, "context_limit": context_limit,
+        "used": used, "model_limit": configured, "context_limit": context_limit, "clamped": clamped,
         "call_limit": call_limit,
         "call_model": actual_label if use_recent else None, "window_mode": window_mode,
         "waiting_for_call": bool(selected and used is None),
@@ -428,7 +433,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 47 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 48 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
