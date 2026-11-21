@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 48) return;
+  if (window[key]?.version === 50) return;
   window[key]?.remove();
-  const state = window[key] = { version: 48, request: null };
+  const state = window[key] = { version: 50, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -338,10 +338,14 @@
       if (next === layoutKey) return;
       layoutKey = next;
       clearModelTitle();
+      // 每次重排先清掉上一轮均分出来的内边距，测量必须在原始宽度下进行。
+      for (const pill of readings) pill.button.style.paddingInline = "";
       slot.dataset.layout = "full";
       bar.setAttribute("data-measuring", "");
       const available = bar.getBoundingClientRect().width - 1;
       const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+      const overviewWasHidden = overview.hidden;
+      overview.hidden = false;
       const overviewWidth = overview.getBoundingClientRect().width;
       const modelFits = parts.every(part => part.clientWidth > 0 && part.scrollWidth <= part.clientWidth + 1);
       bar.removeAttribute("data-measuring");
@@ -363,33 +367,62 @@
           return width + Math.min(full, short);
         }, partial ? overviewWidth : 0) + (choice.length - (partial ? 0 : 1)) * gap;
       };
-      const shown = (modelFits && choices.find(choice => widthOf(choice) <= available)) || [];
-      let spare = available - widthOf(shown);
-      let shortened = false;
-      for (const pill of readings) pill.button.hidden = !shown.includes(pill);
-      for (const pill of shown) {
-        const {full, short} = sizes.get(pill);
-        const extra = Math.max(0, full - short);
-        if (extra <= spare) {
-          spare -= extra;
-          delete pill.button.dataset.reading;
-        } else {
-          pill.button.dataset.reading = "short";
-          shortened = true;
+      const choice = (modelFits && choices.find(item => widthOf(item) <= available)) || [];
+      for (const pill of readings) pill.button.hidden = !choice.includes(pill);
+      overview.hidden = choice.length === readings.length;
+      if (!choice.length) {
+        slot.dataset.layout = "summary";
+        const clipped = parts.find(part => part.scrollWidth > part.clientWidth + 1);
+        if (clipped && !clipped.hasAttribute("title")) {
+          titledModel = clipped;
+          addedTitle = parts.map(part => part.textContent.trim()).join(" ");
+          clipped.setAttribute("title", addedTitle);
         }
-      }
-      overview.hidden = shown.length === readings.length;
-      if (shown.length) {
-        slot.dataset.layout = overview.hidden ? (shortened ? "compact" : "full") : "partial";
         return;
       }
-      slot.dataset.layout = "summary";
-      const clipped = parts.find(part => part.scrollWidth > part.clientWidth + 1);
-      if (clipped && !clipped.hasAttribute("title")) {
-        titledModel = clipped;
-        addedTitle = parts.map(part => part.textContent.trim()).join(" ");
-        clipped.setAttribute("title", addedTitle);
+      // 空白均分：以每颗胶囊的缩写宽度为起点，把剩余空间在还没到满宽的胶囊之间等量注水，
+      // 谁先到满宽谁退出，剩下的继续平分 —— 不再按数组顺序让前面的胶囊先吃满。
+      const partial = choice.length < readings.length;
+      const budget = available - (choice.length - (partial ? 0 : 1)) * gap - (partial ? overviewWidth : 0);
+      const alloc = new Map(choice.map(pill => [pill, sizes.get(pill).short]));
+      let spare = budget - choice.reduce((width, pill) => width + alloc.get(pill), 0);
+      for (let pass = 0; pass < 4 && spare > 0.5; pass++) {
+        const open = choice.filter(pill => alloc.get(pill) < sizes.get(pill).full - 0.5);
+        if (!open.length) break;
+        const step = spare / open.length;
+        let used = 0;
+        for (const pill of open) {
+          const add = Math.min(step, sizes.get(pill).full - alloc.get(pill));
+          alloc.set(pill, alloc.get(pill) + add);
+          used += add;
+        }
+        if (used < 0.5) break;
+        spare -= used;
       }
+      const tier = new Map(choice.map(pill => [pill, alloc.get(pill) >= sizes.get(pill).full - 0.5 ? "full" : "short"]));
+      // 取整到档位会让出一点空间，用这点余量按 readings 的优先级（上下文 → Token → 会话）
+      // 把还能升到完整读数的胶囊补满，同级再挑升级代价最小的。
+      let left = budget - choice.reduce((width, pill) => width + sizes.get(pill)[tier.get(pill)], 0);
+      const rank = new Map(choices[0].map((pill, index) => [pill, index]));
+      const pending = choice.filter(pill => tier.get(pill) === "short")
+        .sort((a, b) => (rank.get(a) ?? 9) - (rank.get(b) ?? 9)
+          || (sizes.get(a).full - sizes.get(a).short) - (sizes.get(b).full - sizes.get(b).short));
+      for (const pill of pending) {
+        const need = sizes.get(pill).full - sizes.get(pill).short;
+        if (need > left + 0.5) continue;
+        left -= need;
+        tier.set(pill, "full");
+      }
+      // 档位取整后剩下的空白，均分成每颗胶囊的内边距，让整行均匀铺满而不是左侧挤成一团。
+      const filled = choice.reduce((width, pill) => width + sizes.get(pill)[tier.get(pill)], 0);
+      const spread = Math.max(0, Math.min(budget - filled, 20 * choice.length)) / (choice.length * 2);
+      for (const pill of choice) pill.button.style.paddingInline = (4 + spread).toFixed(2) + "px";
+      let shortened = false;
+      for (const pill of choice) {
+        if (tier.get(pill) === "full") delete pill.button.dataset.reading;
+        else { pill.button.dataset.reading = "short"; shortened = true; }
+      }
+      slot.dataset.layout = overview.hidden ? (shortened ? "compact" : "full") : "partial";
     }
     const observer = new ResizeObserver(layout);
     const modelObserver = new MutationObserver(() => { layoutKey = undefined; layout(); });
@@ -724,8 +757,7 @@
           ["缓存命中",usage.hit == null ? "暂无数据" : decimal(usage.hit)+"%"],
           ["未缓存输入",value(usage.uncached)+" tok"],["缓存读取",value(usage.cached)+" tok"],
           ["缓存写入",value(usage.written)+" tok"],["输出",value(usage.output)+" tok"]
-        ]}, (usage.total == null ? "Token —" : compact.format(usage.total))
-          + (usage.hit == null ? "" : " · "+decimal(usage.hit)+"%"));
+        ]}, usage.total == null ? "Token —" : compact.format(usage.total));
       const contextReading = [context, contextPercent].filter(Boolean).join(" · ");
       assign(2,contextReading,{
         title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
