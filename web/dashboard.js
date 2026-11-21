@@ -1,5 +1,5 @@
 (() => {
-const VERSION = 39;
+const VERSION = 40;
 function createDashboard(root, load, initialConversation) {
 const $ = id => root.querySelector("#" + id);
 const NS = "http://www.w3.org/2000/svg";
@@ -143,6 +143,36 @@ function heatDetail(heatMetric, column, row, point) {
   return column + " · " + cost + (point.unpriced ? " · " + num(point.unpriced) + " 次未计价" : "");
 }
 
+let tipNode;
+function showHeatTip(text, x, y) {
+  if (disposed) return;
+  if (!tipNode || !tipNode.isConnected) {
+    tipNode = element("p", null, "heat-tip");
+    tipNode.hidden = true;
+    tipNode.setAttribute("role", "tooltip");
+    (root.body || root).append(tipNode);
+  }
+  if (tipNode.textContent !== text) tipNode.textContent = text;
+  tipNode.hidden = false;
+  const bounds = tipNode.getBoundingClientRect();
+  tipNode.style.left = Math.min(Math.max(8, x + 14), Math.max(8, innerWidth - bounds.width - 8)) + "px";
+  tipNode.style.top = (y - bounds.height - 12 < 8 ? y + 18 : y - bounds.height - 12) + "px";
+}
+function hideHeatTip() {
+  if (tipNode) tipNode.hidden = true;
+}
+function attachHeatTip(host, text) {
+  host.addEventListener("pointerenter", event => showHeatTip(text, event.clientX, event.clientY));
+  host.addEventListener("pointermove", event => showHeatTip(text, event.clientX, event.clientY));
+  host.addEventListener("pointerleave", hideHeatTip);
+  host.addEventListener("pointerdown", event => showHeatTip(text, event.clientX, event.clientY));
+  host.addEventListener("focus", () => {
+    const box = host.getBoundingClientRect();
+    showHeatTip(text, box.left + box.width / 2, box.top);
+  });
+  host.addEventListener("blur", hideHeatTip);
+}
+
 function drawHeatmap(prefix) {
   const grid = $(prefix + "-grid");
   const health = prefix === "health";
@@ -152,22 +182,14 @@ function drawHeatmap(prefix) {
   const buckets = data?.buckets || [];
   const models = data?.models || [];
   const hourly = data?.window === "24h" || data?.granularity === "hour";
-  const width = hourly ? 9 : 7;
-  const pageSize = hourly ? 27 : 35;
-  const pages = Math.max(1, Math.ceil(buckets.length / pageSize));
-  state.page = Math.max(0, Math.min(state.page, pages - 1));
-  const end = buckets.length - state.page * pageSize;
-  const columns = buckets.slice(Math.max(0, end - pageSize), end);
+  const columns = buckets;
   $(health ? "health-caption" : "chart-caption").textContent = columns.length ? columns[0] + " 至 " + columns.at(-1)
     + " · 北京时间 · 每格一" + (hourly ? "小时" : "天") + "，从左到右" : "北京时间";
-  const key = JSON.stringify([heatMetric, state.page, [...state.selected], data]);
+  const key = JSON.stringify([heatMetric, [...state.selected], data]);
   if (key === state.signature) return;
   state.signature = key;
   drawHeatPicker(prefix, models, state);
   if (!health) $("usage-heat-unpriced").hidden = metric !== "usd";
-  $(prefix + "-pages").hidden = pages === 1;
-  $(prefix + "-older").disabled = state.page + 1 >= pages;
-  $(prefix + "-newer").disabled = state.page === 0;
   if (!models.length) {
     grid.replaceChildren(element("p", "当前范围暂无模型记录", "empty"));
     return;
@@ -201,14 +223,13 @@ function drawHeatmap(prefix) {
     header.append(heading, total);
 
     const cells = element("div", null, "health-cells");
-    cells.style.setProperty("--heat-columns", width);
-    const selected = element("p", null, "health-selection");
-    selected.setAttribute("aria-live", "polite");
+    cells.style.setProperty("--heat-columns", columns.length);
+    if (columns.length > 45) cells.classList.add("heat-dense");
     for (const column of columns) {
       const point = row.cells[column];
       if (!point) {
         const empty = element("span", null, "health-cell health-empty");
-        empty.title = column + " · 无记录";
+        attachHeatTip(empty, column + " · 无记录");
         cells.append(empty);
         continue;
       }
@@ -219,16 +240,13 @@ function drawHeatmap(prefix) {
       if (tone === "heat-usage") button.dataset.level = Math.max(1, Math.ceil(5 * Math.sqrt(amount / (maximum || 1))));
       const text = heatDetail(heatMetric, column, row, point);
       button.type = "button";
-      button.title = text;
       button.dataset.healthCell = name + "|" + column;
       button.setAttribute("aria-label", name + " · " + text);
-      for (const event of ["pointerenter", "focus", "click"]) {
-        button.addEventListener(event, () => { selected.textContent = text; });
-      }
+      attachHeatTip(button, text);
       if (button.dataset.healthCell === active) nextFocus = button;
       cells.append(button);
     }
-    card.append(header, cells, selected);
+    card.append(header, cells);
     return card;
   });
   grid.replaceChildren(...(cards.length ? cards : [element("p", "所选模型在当前筛选下暂无记录", "empty")]));
@@ -555,12 +573,6 @@ for (const [prefix, state] of Object.entries(heatmaps)) {
     state.selected.clear();
     drawHeatmap(prefix);
   });
-  for (const [suffix, delta] of [["older", 1], ["newer", -1]]) {
-    $(prefix + "-" + suffix).addEventListener("click", () => {
-      state.page += delta;
-      drawHeatmap(prefix);
-    });
-  }
 }
 root.querySelectorAll("[data-health-window]").forEach(button => button.addEventListener("click", () => {
   healthWindow = button.dataset.healthWindow;

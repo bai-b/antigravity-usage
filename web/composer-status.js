@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 39) return;
+  if (window[key]?.version === 40) return;
   window[key]?.remove();
-  const state = window[key] = { version: 39, request: null };
+  const state = window[key] = { version: 40, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();

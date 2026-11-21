@@ -189,6 +189,12 @@ footer { display: grid; gap: 3px; font-size: 11.5px; color: var(--dim); }
 .heat-usage[data-level="5"] { --heat-strength: 91%; }
 .health-legend .heat-scale { gap: 2px; flex-wrap: nowrap; }
 .health-cells button:hover { background: var(--health-fill, transparent); border-color: var(--ink); }
-.health-selection { margin-block-start: 4px; color: var(--dim); font-size: 11px; line-height: 1.5; }
-.health-selection:empty { display: none; }
+.heat-tip {
+  position: fixed; z-index: 60; inset-inline-start: 0; inset-block-start: 0; margin: 0;
+  padding: 4px 8px; border-radius: 6px; max-inline-size: 300px;
+  font-size: 11px; line-height: 1.45; color: var(--foreground, CanvasText);
+  background: var(--raise, #fff); border: 1px solid var(--border, #8884);
+  box-shadow: 0 6px 18px #0002; pointer-events: none;
+}
+.heat-cells.heat-dense { gap: 3px; }
 @media (max-width: 560px) { .summary { grid-template-columns: minmax(0, 1fr); } }
