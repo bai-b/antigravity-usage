@@ -1,5 +1,5 @@
 (() => {
-const VERSION = 40;
+const VERSION = 47;
 function createDashboard(root, load, initialConversation) {
 const $ = id => root.querySelector("#" + id);
 const NS = "http://www.w3.org/2000/svg";
@@ -585,7 +585,7 @@ $("fold").addEventListener("click", () => {
   const button = $("fold");
   const open = button.getAttribute("aria-expanded") === "true";
   button.setAttribute("aria-expanded", String(!open));
-  button.textContent = open ? "⌃" : "⌄";
+  button.querySelector(".fold-label").textContent = open ? "展开图表" : "收起图表";
   if (open && $("usage-heat-picker").matches(":popover-open")) $("usage-heat-picker").hidePopover();
   $("chart-area").classList.toggle("collapsed", open);
 });

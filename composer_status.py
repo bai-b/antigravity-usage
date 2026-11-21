@@ -326,10 +326,24 @@ def poll(guard):
     executor = ThreadPoolExecutor(max_workers=1)
     rate_executor = ThreadPoolExecutor(max_workers=1)
     requests = {}
+    reports = {}
     catalogs = {}
     quota_cache = {}
     connections = {}
     targets = {}
+    def build_report(filters, snapshot=None, catalog=None, fx=None):
+        key = json.dumps(filters, sort_keys=True)
+        stamp, core = reports.get(key, (0, None))
+        if core is None or time.monotonic() - stamp > 20:
+            cached = dashboard_report(history, filters, snapshot, catalog, fx)
+            if "error" in cached:
+                return cached
+            core = cached["report"]
+            reports[key] = (time.monotonic(), core)
+        if len(reports) > 40:
+            reports.pop(next(iter(reports)))
+        return {"report": dict(core, quota=snapshot, latest_fx=fx)}
+    warm = dict(start="", end="", conversation="", only=False, hours=0, day=False, health_window="24h")
     week_job = executor.submit(history.week_reference_usd)
     executor.submit(history.report, convert=True)
     rate_job = rate_executor.submit(latest_usd_cny)
@@ -338,6 +352,7 @@ def poll(guard):
     latest_rate, week_usd = None, None
     had_windows, last_rate_request = False, time.monotonic()
     cached_sessions = {}
+    warmed = False
     attached = False
     detached = False
     try:
@@ -403,7 +418,7 @@ def poll(guard):
                 attached = False
                 guard.settimeout(1)
                 continue
-            guard.settimeout(0.15)
+            guard.settimeout(0.05)
             attached = False
             for key, (url, authority) in targets.items():
                 try:
@@ -413,7 +428,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 40 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 47 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
@@ -429,6 +444,9 @@ def poll(guard):
                         snapshot = quota_snapshot(https_port=port)
                         quota_cache[port] = (time.monotonic() + (60 if snapshot["available"] else 10), snapshot)
                     quotas = quotas_by_model(snapshot["groups"], {item["model"] for item in probe["inputs"]}, catalog)
+                    if not warmed:
+                        warmed = True
+                        executor.submit(build_report, warm, snapshot, catalog, latest_rate)
                     sessions = []
                     for item in probe["inputs"]:
                         cache_key = (port, item["id"], item["model"], item["windowMode"])
@@ -445,7 +463,7 @@ def poll(guard):
                         requests.pop(key)
                         request = None
                     if pending and not request:
-                        request = (*request_key, executor.submit(dashboard_report, history, pending["filters"],
+                        request = (*request_key, executor.submit(build_report, pending["filters"],
                                                                  snapshot, catalog, latest_rate))
                         requests[key] = request
                     completed = None

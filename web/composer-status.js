@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 40) return;
+  if (window[key]?.version === 47) return;
   window[key]?.remove();
-  const state = window[key] = { version: 40, request: null };
+  const state = window[key] = { version: 47, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -590,6 +590,7 @@
       style(dialog, {
         width: "min(1160px, calc(100vw - 40px))", maxWidth: "none",
         maxHeight: "min(86vh, 900px)", padding: "0", overflow: "auto", margin: "auto",
+        position: "fixed", inset: "0", zIndex: "1001",
         border: "1px solid var(--border, #8884)", borderRadius: "16px",
         background: "var(--background, Canvas)", color: "var(--foreground, CanvasText)",
         boxShadow: "0 20px 64px #0003", overscrollBehavior: "contain"
@@ -603,23 +604,28 @@
       root.innerHTML = html;
       root.querySelector("#close-dashboard").hidden = false;
       root.querySelector("#close-dashboard").addEventListener("click", () => dialog.close());
-      dialog.addEventListener("click", event => {
-        if (event.target === dialog) dialog.close();
-      });
+      const onKey = event => { if (event.key === "Escape") dialog.close(); };
+      document.addEventListener("keydown", onKey);
       dialog.append(host);
-      document.body.append(dialog);
-      const view = state.createDashboard(root, filters => new Promise((resolve, reject) => {
-        const cacheKey=JSON.stringify(filters);
-        const cached=dashboardCache.get(cacheKey);
-        if(cached&&performance.now()-cached.time<5000){resolve(cached.report);return;}
-        pending = { resolve, reject, cacheKey };
-        state.request = { epoch, id: ++serial, filters };
-        timeout = setTimeout(() => {
-          pending = undefined;
-          state.request = null;
-          reject(new Error("本机用量服务未响应，请刷新重试"));
-        }, 25000);
-      }), id);
+      const scrim = document.createElement("div");
+      style(scrim, { position: "fixed", inset: "0", zIndex: "1000", background: "#00000052" });
+      scrim.addEventListener("click", () => dialog.close());
+      document.body.append(scrim, dialog);
+      let view = null;
+      const mount = () => {
+        view = state.createDashboard(root, filters => new Promise((resolve, reject) => {
+          const cacheKey=JSON.stringify(filters);
+          const cached=dashboardCache.get(cacheKey);
+          if(cached&&performance.now()-cached.time<5000){resolve(cached.report);return;}
+          pending = { resolve, reject, cacheKey };
+          state.request = { epoch, id: ++serial, filters };
+          timeout = setTimeout(() => {
+            pending = undefined;
+            state.request = null;
+            reject(new Error("本机用量服务未响应，请刷新重试"));
+          }, 25000);
+        }), id);
+      };
       state.finish = data => {
         if (!pending || data.epoch !== epoch || data.id !== serial) return;
         const current = pending;
@@ -635,17 +641,19 @@
       };
       state.dismiss = () => dialog.close();
       dialog.addEventListener("close", () => {
-        view.dispose();
+        view?.dispose();
         clearTimeout(timeout);
         state.request = null;
         state.finish = null;
         state.dismiss = null;
         pending?.reject(new Error("已关闭"));
+        document.removeEventListener("keydown", onKey);
+        scrim.remove();
         dialog.remove();
         if (opener.isConnected) opener.focus();
       }, {once: true});
-      dialog.showModal();
-      root.querySelector("#close-dashboard").focus();
+      dialog.show();
+      requestAnimationFrame(mount);
     };
   };
 
