@@ -1,5 +1,5 @@
 (() => {
-const VERSION = 38;
+const VERSION = 39;
 function createDashboard(root, load, initialConversation) {
 const $ = id => root.querySelector("#" + id);
 const NS = "http://www.w3.org/2000/svg";
@@ -202,7 +202,8 @@ function drawHeatmap(prefix) {
 
     const cells = element("div", null, "health-cells");
     cells.style.setProperty("--heat-columns", width);
-    const selected = element("p", "选择方格查看时段详情", "health-selection");
+    const selected = element("p", null, "health-selection");
+    selected.setAttribute("aria-live", "polite");
     for (const column of columns) {
       const point = row.cells[column];
       if (!point) {

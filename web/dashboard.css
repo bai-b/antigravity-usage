@@ -189,5 +189,6 @@ footer { display: grid; gap: 3px; font-size: 11.5px; color: var(--dim); }
 .heat-usage[data-level="5"] { --heat-strength: 91%; }
 .health-legend .heat-scale { gap: 2px; flex-wrap: nowrap; }
 .health-cells button:hover { background: var(--health-fill, transparent); border-color: var(--ink); }
-.health-selection { min-block-size: 3em; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.health-selection { margin-block-start: 4px; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.health-selection:empty { display: none; }
 @media (max-width: 560px) { .summary { grid-template-columns: minmax(0, 1fr); } }
