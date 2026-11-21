@@ -628,9 +628,10 @@ const timer = setInterval(() => { if (!document.hidden) update(false); }, 15000)
 return {dispose() { disposed = true; clearInterval(timer); }};
 }
 
-if (window.__agyUsageStatus?.version === VERSION) {
+if (window.__agyUsageStatus) {
   window.__agyUsageStatus.createDashboard = createDashboard;
-} else {
+  window.__agyUsageStatus.dashboardVersion = VERSION;
+} else if (document.getElementById("session")) {
   createDashboard(document, async filters => {
     const query = new URLSearchParams({...filters, only: filters.only ? "1" : "0",
       day: filters.day ? "1" : "0", fx: "1"});

@@ -43,7 +43,11 @@ BAR = (WEB / "composer-status.js").read_text(encoding="utf-8")
 HTML = (WEB / "dashboard.html").read_text(encoding="utf-8").split("<body>", 1)[1].split("</body>", 1)[0]
 ASSETS = json.dumps({"html": HTML, "css": (WEB / "dashboard.css").read_text(encoding="utf-8")})
 VIEW = (WEB / "dashboard.js").read_text(encoding="utf-8")
-INSTALL = BAR + "\n" + VIEW + "\nwindow.__agyUsageStatus.install(" + ASSETS + ");"
+INSTALL = (
+    BAR
+    + "\nwindow.__agyUsageStatus.install(" + ASSETS + ");"
+    + "\ntry {" + VIEW + "\n} catch (error) { console.error('[agy-usage] dashboard bundle failed', error); }"
+)
 LOG = logging.getLogger("composer-status")
 CONNECTION_ERRORS = (OSError, ValueError, WebSocketException)
 
@@ -409,7 +413,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 38 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 39 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
