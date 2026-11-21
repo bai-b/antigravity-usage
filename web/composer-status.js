@@ -1,19 +1,37 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 24) return;
+  if (window[key]?.version === 37) return;
   window[key]?.remove();
-  const state = window[key] = { version: 27, request: null };
+  const state = window[key] = { version: 38, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
   const selector = '[data-testid="agent-input-box"]';
   const attr = "data-agy-usage-status";
   const launcherAttr = "data-agy-usage-launcher";
+  let overlay;
+
+  function claimOverlay(owner, close, fixed = false) {
+    if (state.dismiss) return false;
+    if (overlay?.owner === owner) {
+      overlay.fixed ||= fixed;
+      return true;
+    }
+    if (overlay?.fixed && !fixed) return false;
+    overlay?.close();
+    overlay = {owner, close, fixed};
+    return true;
+  }
+
+  function releaseOverlay(owner) {
+    if (overlay?.owner === owner) overlay = undefined;
+  }
   const number = new Intl.NumberFormat("zh-CN");
   const money = new Intl.NumberFormat("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
   const value = (v, suffix = "") => v == null ? "—" : number.format(v) + suffix;
   const compact = new Intl.NumberFormat("en", {notation: "compact", maximumFractionDigits: 1});
-  const capacity = tokens => tokens >= 1024 ** 2 && tokens % (1024 ** 2) === 0 ? tokens / (1024 ** 2) + "M"
+  const capacity = tokens => tokens % 1000 === 0 ? compact.format(tokens)
+    : tokens >= 1024 ** 2 && tokens % (1024 ** 2) === 0 ? tokens / (1024 ** 2) + "M"
     : tokens >= 1024 && tokens % 1024 === 0 ? tokens / 1024 + "K" : compact.format(tokens);
   const time = new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"
@@ -31,9 +49,15 @@
     return input.querySelector('[data-testid="model-selector-trigger"]');
   }
 
+  function modelParts(trigger) {
+    return [...(trigger?.children || [])].filter(part => part instanceof HTMLElement
+      && !part.matches('[hidden], [aria-hidden="true"], [data-icon], .google-symbols')
+      && part.textContent.trim());
+  }
+
   function model(input) {
     const trigger = modelTrigger(input);
-    const label = trigger?.firstElementChild?.textContent.trim() || "";
+    const label = modelParts(trigger).map(part => part.textContent.trim()).join(" ");
     const mode = trigger?.dataset.contextWindow;
     const suffix = mode ? " · " + mode : "";
     const name = mode && label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
@@ -46,32 +70,41 @@
 
   const styles = document.createElement("style");
   styles.textContent = `
-    [data-agy-usage-slot] {flex:1 1 0px;min-width:0;height:24px;align-self:center;container:agy-usage-space / inline-size}
-    [data-agy-usage-status] {display:flex;justify-content:space-evenly;align-items:center;gap:2px;height:100%;width:100%;margin-inline:auto;overflow:clip;visibility:hidden;--agy-usage-density:hidden}
-    [data-agy-usage-status][data-agy-usage-fit] {visibility:visible;gap:12px}
-    /* 均匀分布但限制带宽：读数少的时候不把三个小读头甩到两头去。 */
-    [data-agy-usage-status][data-agy-usage-fit="3"] {max-width:min(100%,30rem)}
-    [data-agy-usage-status][data-agy-usage-fit="2"] {max-width:min(100%,26rem)}
-    [data-agy-usage-status][data-agy-usage-fit="1"] {max-width:min(100%,13rem)}
-    [data-agy-usage-status][data-agy-usage-fit="0"] {max-width:min(100%,10rem)}
-    [data-agy-usage-status][data-agy-usage-fit="-1"],[data-agy-usage-status][data-agy-usage-fit="-2"] {justify-content:center;gap:6px}
-    [data-agy-usage-status] button {font:inherit;color:inherit;white-space:nowrap;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
+    [data-agy-usage-slot] {min-inline-size:0;align-self:stretch;padding-inline:4px}
+    .agy-composer-footer:has(> [data-agy-usage-slot]) {display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr) max-content;grid-template-areas:"native usage actions"}
+    .agy-composer-footer:has(> [data-agy-usage-slot]) > :first-child {grid-area:native}
+    .agy-composer-footer:has(> [data-agy-usage-slot]) > :last-child {grid-area:actions}
+    .agy-composer-footer > [data-agy-usage-slot] {grid-area:usage;align-self:center}
+    .agy-composer-footer:has(> [data-agy-usage-slot][data-layout="summary"]) {grid-template-columns:minmax(0,1fr) max-content max-content}
+    [data-agy-usage-status] {display:flex;align-items:center;justify-content:center;gap:1px 7px;min-block-size:22px;white-space:nowrap;overflow:clip}
+    [data-agy-usage-status] button {font:inherit;color:inherit;text-align:start;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
     [data-agy-usage-status] button:hover,[data-agy-usage-status] button:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-status] button:focus-visible {outline:1px solid var(--foreground,#888);outline-offset:-1px}
-    [data-agy-usage-status] .agy-usage-pill {position:relative;display:inline-flex;align-items:center;gap:4px;flex:none}
+    [data-agy-usage-status] .agy-usage-pill {display:inline-flex;align-items:center;gap:4px;flex:none;min-inline-size:0}
     [data-agy-usage-status] .agy-usage-icon {display:grid;place-items:center;flex:none}
-    [data-agy-usage-status] .agy-usage-reading {display:none;white-space:nowrap;pointer-events:none}
-    [data-agy-usage-status][data-agy-usage-fit="3"] .agy-usage-full {display:inline}
-    [data-agy-usage-status][data-agy-usage-fit="2"] .agy-usage-short {display:inline}
-    [data-agy-usage-status][data-agy-usage-fit="1"] .agy-usage-mini,
-    [data-agy-usage-status][data-agy-usage-fit="0"] .agy-usage-mini,
-    [data-agy-usage-status][data-agy-usage-fit="-1"] .agy-usage-mini {display:inline}
-    [data-agy-usage-status][data-agy-usage-fit="0"] .agy-usage-pill:nth-child(1) {display:none}
-    [data-agy-usage-status][data-agy-usage-fit="-1"] .agy-usage-pill:nth-child(-n+2),
-    [data-agy-usage-status][data-agy-usage-fit="-2"] .agy-usage-pill:nth-child(-n+2) {display:none}
+    [data-agy-usage-status] .agy-usage-reading {min-inline-size:0}
+    [data-agy-usage-status] .agy-usage-compact {display:none}
+    [data-agy-usage-status] [data-reading="short"] .agy-usage-full {display:none}
+    [data-agy-usage-status] [data-reading="short"] .agy-usage-compact {display:inline}
+    [data-agy-usage-status] .agy-usage-summary {padding-inline:6px}
+    [data-agy-usage-status] .agy-usage-pill[hidden] {display:none}
+    [data-agy-usage-status][data-measuring] .agy-usage-pill {display:inline-flex}
+    [data-agy-usage-status][data-measuring] .agy-usage-reading {display:inline}
+    .agy-composer-footer:has(> [data-agy-usage-slot]) [data-testid="model-selector-trigger"] > span:not([aria-hidden="true"],[data-icon],.google-symbols) {white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     [data-agy-usage-launcher] {display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--foreground,CanvasText);cursor:pointer;font-size:12px;white-space:nowrap;-webkit-app-region:no-drag}
     [data-agy-usage-launcher]:hover,[data-agy-usage-launcher]:focus-visible {background:var(--secondary,#8882)}
     [data-agy-usage-launcher]:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
+    .agy-usage-header-pill {flex:none;white-space:nowrap;border:0;border-radius:6px;background:none;cursor:pointer;padding:0 6px;height:28px;color:var(--muted-foreground,#71717a);font:inherit;font-size:11px;-webkit-app-region:no-drag}
+    .agy-usage-header-pill:hover,.agy-usage-header-pill:focus-visible {background:var(--secondary,#8882)}
+    .agy-usage-header-pill:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
+    .agy-usage-header-pill.agy-usage-task {display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border-radius:999px;background:var(--secondary,#8882);color:var(--muted-foreground,#71717a);font-weight:600;font-variant-numeric:tabular-nums}
+    .agy-usage-task[data-measured] {--agy-task-ink:light-dark(#275dbe,#afcaff);color:var(--agy-task-ink);background:color-mix(in oklab,var(--agy-task-ink) 9%,transparent)}
+    .agy-usage-task[data-complete] {--agy-task-ink:light-dark(#157451,#81d5ae)}
+    .agy-usage-task[data-measured]:hover,.agy-usage-task[data-measured]:focus-visible {background:color-mix(in oklab,var(--agy-task-ink) 17%,transparent)}
+    .agy-usage-task .agy-usage-icon {display:inline-block;width:12px;height:12px;flex:none;border-radius:50%;background:conic-gradient(currentColor var(--agy-task-fraction,0%),var(--border,#8886) 0);mask-image:radial-gradient(transparent 46%,black 51%)}
+    @media (forced-colors: active) {
+      .agy-usage-task .agy-usage-icon {forced-color-adjust:none;background:conic-gradient(CanvasText var(--agy-task-fraction,0%),GrayText 0)}
+    }
     .agy-usage-launcher-icon {height:12px;display:flex;align-items:end;gap:2px;color:var(--muted-foreground,#777)}
     .agy-usage-launcher-icon i {width:2px;border-radius:1px;background:currentColor}
     .agy-usage-launcher-icon i:nth-child(1) {height:5px}
@@ -103,9 +136,10 @@
   function makeBar() {
     const slot = document.createElement("div");
     slot.setAttribute("data-agy-usage-slot", "");
-    slot.id = "agy-usage-space-" + crypto.randomUUID();
+    slot.dataset.layout = "summary";
     const bar = document.createElement("div");
     bar.setAttribute(attr, "");
+    bar.setAttribute("role", "group");
     bar.setAttribute("aria-label", "Antigravity 会话用量");
     style(bar, {fontSize:"11px",lineHeight:"16px",fontVariantNumeric:"tabular-nums",
       color:"var(--muted-foreground,#71717a)"});
@@ -116,7 +150,6 @@
     popup.id = "agy-usage-popup-" + crypto.randomUUID();
     document.body.append(popup);
     let active;
-    let pinned = false;
     let closeTimer;
     let frame = 0;
     let painted = "";
@@ -125,18 +158,20 @@
       cancelAnimationFrame(frame);
       frame = 0;
       if (popup.matches(":popover-open")) popup.hidePopover();
+      releaseOverlay(slot);
       active?.setAttribute("aria-expanded","false");
       active = undefined;
-      pinned = false;
       painted = "";
     };
+    const pinned = () => overlay?.owner === slot && overlay.fixed;
     const closeSoon = () => {
-      if (!pinned) closeTimer = setTimeout(hide,140);
+      clearTimeout(closeTimer);
+      if (!pinned()) closeTimer = setTimeout(hide,140);
     };
     const position = () => {
       if (!active) return;
       const box=active.getBoundingClientRect();
-      if (!box.width || !box.height || (bar.contains(active) && getComputedStyle(bar).visibility === "hidden")) { hide();return; }
+      if (!box.width || !box.height) { hide();return; }
       const bounds=popup.getBoundingClientRect();
       const left=Math.max(12,Math.min(box.left,innerWidth-bounds.width-12))+"px";
       const above=box.top-bounds.height-8;
@@ -170,16 +205,17 @@
       if (content.progress != null) {
         const meter=document.createElement("progress");meter.max=100;
         meter.value=Math.max(0,Math.min(100,content.progress));
-        meter.setAttribute("aria-label","上下文已用");
+        meter.setAttribute("aria-label",content.progressLabel || "上下文已用");
         popup.append(meter);
       }
       popup.append(list);
       if(content.note){const note=document.createElement("small");note.textContent=content.note;popup.append(note);}
       position();
     };
-    function show(button) {
+    function show(button, fixed = false) {
+      if (pinned() && active !== button && !fixed) return;
+      if (!claimOverlay(slot, hide, fixed)) return;
       clearTimeout(closeTimer);
-      if (pinned && active!==button) return;
       active?.setAttribute("aria-expanded","false");
       active=button;
       button.setAttribute("aria-expanded","true");
@@ -188,7 +224,7 @@
       position();
       if (active && !frame) frame = requestAnimationFrame(follow);
     }
-    const pills=["会话统计","Token 用量","上下文","额度"].map((name,index)=>{
+    const pills=["会话统计","Token 用量","上下文","额度","任务进度","会话用量"].map((name,index)=>{
       const button=document.createElement("button");
       button.type="button";button.className="agy-usage-pill";
       button.setAttribute("aria-label",name);
@@ -207,29 +243,39 @@
           : "M20 5c0 2-4 3-8 3S4 7 4 5s4-3 8-3 8 1 8 3ZM4 5v14c0 2 4 3 8 3s8-1 8-3V5M4 12c0 2 4 3 8 3s8-1 8-3");
         svg.append(path);icon.append(svg);
       }
-      const reading=name=>{
-        const span=document.createElement("span");
-        span.className="agy-usage-reading agy-usage-"+name;
-        span.textContent="—";
-        return span;
-      };
-      const text=reading("full"), short=reading("short"), mini=reading("mini");
-      if(index===3) button.append(text);
+      const text=document.createElement("span");
+      text.className="agy-usage-reading agy-usage-full";
+      text.textContent="—";
+      const short=document.createElement("span");
+      short.className="agy-usage-reading agy-usage-compact";
+      if(index===5) {
+        button.classList.add("agy-usage-summary");
+        const summaryIcon=document.createElement("span");
+        summaryIcon.className="agy-usage-launcher-icon";
+        summaryIcon.setAttribute("aria-hidden","true");
+        summaryIcon.append(...Array.from({length:3}, () => document.createElement("i")));
+        button.append(summaryIcon);
+      } else if(index>=3) {
+        button.className="agy-usage-header-pill";
+        if (index===4) {button.classList.add("agy-usage-task");button.append(icon);}
+        button.append(text);
+      }
       else {
-        for (const span of [text, short, mini]) span.setAttribute("aria-hidden", "true");
-        button.append(icon,text,short,mini);
+        text.setAttribute("aria-hidden", "true");
+        short.setAttribute("aria-hidden", "true");
+        button.append(icon,text,short);
       }
       button.addEventListener("pointerenter",()=>show(button));
-      button.addEventListener("pointerleave",closeSoon);
+      button.addEventListener("pointerleave",()=>{if(active===button)closeSoon();});
       button.addEventListener("focus",()=>show(button));
-      button.addEventListener("blur",closeSoon);
+      button.addEventListener("blur",()=>{if(active===button)closeSoon();});
       button.addEventListener("click",event=>{
         event.stopPropagation();
-        if(pinned&&active===button) hide();
-        else {pinned=false;show(button);pinned=true;}
+        if(pinned()&&active===button) hide();
+        else show(button,true);
       });
-      if(index<3) bar.append(button);
-      return {button,text,short,mini,icon,name};
+      if(index<3 || index===5) bar.append(button);
+      return {button,text,short,icon,name};
     });
     const ring=pills[2].icon;
     style(ring,{width:"12px",height:"12px",flexShrink:"0",borderRadius:"50%",position:"relative",
@@ -243,49 +289,112 @@
     const outside=e=>{if(!bar.contains(e.target)&&!popup.contains(e.target)&&!pills.some(p=>p.button.contains(e.target)))hide();};
     document.addEventListener("pointerdown",outside,true);
     document.addEventListener("keydown",escape,true);
-    const summaries = pills.slice(0, 3);
-    // 不再估宽度、不再切档案档：先摆最丰富的一档，量真实占用，放不下才降一档。
-    const FIT_LEVELS = ["3", "2", "1", "0", "-1", "-2"];
-    const needed = () => {
-      const kids = [...bar.children].filter(child => child.getClientRects().length);
-      const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
-      return kids.reduce((total, child) => total + child.getBoundingClientRect().width, 0)
-        + gap * Math.max(0, kids.length - 1);
-    };
-    // 降档不留余量、升档要留余量：右侧 Turbo/麦克风/停止按钮在流式输出时会显隐，
-    // 那几像素的抖动不该让读数来回跳档。
-    const HOLD = 0, RAISE = 12, READABLE = 30;
-    const fits = (level, slack = 0) => {
-      bar.setAttribute("data-agy-usage-fit", level);
-      return needed() + slack <= bar.clientWidth;
-    };
+    let measuredFooter;
+    let measuredActions;
+    let measuredControls;
+    let layoutKey;
+    let titledModel;
+    let addedTitle;
+    const readings = pills.slice(0, 3);
+    const overview = pills[5].button;
+    // Prefer context, then Token, then conversation statistics when the same
+    // number of readings can fit in more than one combination.
+    const [context, tokens, conversationStats] = [...readings].reverse();
+    const choices = [[context, tokens, conversationStats], [context, tokens], [context, conversationStats],
+      [tokens, conversationStats], [context], [tokens], [conversationStats]];
+    function clearModelTitle() {
+      if (titledModel?.getAttribute("title") === addedTitle) titledModel?.removeAttribute("title");
+      titledModel = addedTitle = undefined;
+    }
     function layout() {
-      if (!slot.isConnected || !bar.isConnected || !bar.clientWidth) return;
-      const current = FIT_LEVELS.indexOf(bar.getAttribute("data-agy-usage-fit") || "");
-      let chosen = FIT_LEVELS.length - 1;
-      if (current >= 0 && fits(FIT_LEVELS[current], HOLD)) chosen = current;
-      else {
-        for (let index = Math.max(0, current); index < FIT_LEVELS.length; index++) {
-          if (fits(FIT_LEVELS[index])) { chosen = index; break; }
+      const footer = slot.parentElement;
+      const trigger = footer?.querySelector('[data-testid="model-selector-trigger"]');
+      if (!footer?.classList.contains("agy-composer-footer") || !trigger || !footer.clientWidth) {
+        clearModelTitle();
+        return;
+      }
+      const controls = footer.firstElementChild;
+      const parts = modelParts(trigger).filter(part => part.getClientRects().length);
+      const actions = slot.nextElementSibling;
+      if (!parts.length || !actions) return;
+      if (measuredFooter !== footer || measuredActions !== actions || measuredControls !== controls) {
+        observer.disconnect();
+        observer.observe(footer);
+        observer.observe(actions);
+        // 模型名变长会挤窄用量列，但 footer 宽度不变 —— 必须也盯住 slot 自己。
+        observer.observe(slot);
+        modelObserver.disconnect();
+        modelObserver.observe(controls, {subtree:true,childList:true,characterData:true,attributes:true,
+          attributeFilter:["class","style","hidden","aria-hidden","data-icon","data-context-window"]});
+        measuredFooter = footer;
+        measuredActions = actions;
+        measuredControls = controls;
+        layoutKey = undefined;
+      }
+      const leadingWidth = [...controls.children]
+        .filter(control => !control.contains(trigger)).reduce((width, control) => width + control.offsetWidth, 0);
+      const next = JSON.stringify([footer.clientWidth, slot.clientWidth, bar.clientWidth, actions.offsetWidth, leadingWidth, ...parts.map(part => part.textContent),
+        ...readings.map(pill => [pill.text.textContent, pill.short.textContent])]);
+      if (next === layoutKey) return;
+      layoutKey = next;
+      clearModelTitle();
+      slot.dataset.layout = "full";
+      bar.setAttribute("data-measuring", "");
+      const available = bar.getBoundingClientRect().width - 1;
+      const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+      const overviewWidth = overview.getBoundingClientRect().width;
+      const modelFits = parts.every(part => part.clientWidth > 0 && part.scrollWidth <= part.clientWidth + 1);
+      bar.removeAttribute("data-measuring");
+      // 逐档实测：整颗胶囊在「完整读数」「缩写读数」两种状态下的真实宽度。
+      // 原来用 combined 反推两个宽度，一旦估算偏差就会选中放不下的组合、把文字裁掉。
+      const sizes = new Map(readings.map(pill => {
+        pill.button.hidden = false;
+        delete pill.button.dataset.reading;
+        const full = pill.button.getBoundingClientRect().width;
+        pill.button.dataset.reading = "short";
+        const short = pill.button.getBoundingClientRect().width;
+        delete pill.button.dataset.reading;
+        return [pill, {full, short: Math.min(full, short)}];
+      }));
+      const widthOf = choice => {
+        const partial = choice.length < readings.length;
+        return choice.reduce((width, pill) => {
+          const {full, short} = sizes.get(pill);
+          return width + Math.min(full, short);
+        }, partial ? overviewWidth : 0) + (choice.length - (partial ? 0 : 1)) * gap;
+      };
+      const shown = (modelFits && choices.find(choice => widthOf(choice) <= available)) || [];
+      let spare = available - widthOf(shown);
+      let shortened = false;
+      for (const pill of readings) pill.button.hidden = !shown.includes(pill);
+      for (const pill of shown) {
+        const {full, short} = sizes.get(pill);
+        const extra = Math.max(0, full - short);
+        if (extra <= spare) {
+          spare -= extra;
+          delete pill.button.dataset.reading;
+        } else {
+          pill.button.dataset.reading = "short";
+          shortened = true;
         }
       }
-      for (let index = chosen - 1; index >= 0; index--) {
-        if (fits(FIT_LEVELS[index], RAISE)) { chosen = index; break; }
+      overview.hidden = shown.length === readings.length;
+      if (shown.length) {
+        slot.dataset.layout = overview.hidden ? (shortened ? "compact" : "full") : "partial";
+        return;
       }
-      // 圆环孤零零挂着读不出信息：只要还有 30px，就保留「圆环 + 百分比」。
-      if (chosen === FIT_LEVELS.length - 1 && bar.clientWidth >= READABLE) chosen = FIT_LEVELS.length - 2;
-      bar.setAttribute("data-agy-usage-fit", FIT_LEVELS[chosen]);
-      bar.style.setProperty("--agy-usage-density", FIT_LEVELS[chosen]);
-      slot.usage.measured = bar.clientWidth;
+      slot.dataset.layout = "summary";
+      const clipped = parts.find(part => part.scrollWidth > part.clientWidth + 1);
+      if (clipped && !clipped.hasAttribute("title")) {
+        titledModel = clipped;
+        addedTitle = parts.map(part => part.textContent.trim()).join(" ");
+        clipped.setAttribute("title", addedTitle);
+      }
     }
-    // 分屏、缩放、面板开合、读数变化都会重新量一次，按需降档。
-    const observer = new ResizeObserver(() => layout());
-    observer.observe(slot);
-    // 字体加载完成、页面缩放变化后字宽会变，重新量一次，跨机器字宽差异不会卡在旧档位。
-    const relayout = () => layout();
-    window.addEventListener("resize", relayout);
-    document.fonts?.ready.then(relayout).catch(() => {});
-    slot.usage={pills,ring,paint,layout,measured:0,destroy(){observer.disconnect();window.removeEventListener("resize", relayout);hide();popup.remove();pills[3].button.remove();
+    const observer = new ResizeObserver(layout);
+    const modelObserver = new MutationObserver(() => { layoutKey = undefined; layout(); });
+    document.fonts?.ready.then(() => { layoutKey = undefined; if (slot.isConnected) layout(); });
+    slot.usage={pills,ring,paint,layout,destroy(){observer.disconnect();modelObserver.disconnect();clearModelTitle();hide();popup.remove();pills.slice(3,5).forEach(pill=>pill.button.remove());
       document.removeEventListener("pointerdown",outside,true);document.removeEventListener("keydown",escape,true);}};
     return slot;
   }
@@ -341,6 +450,7 @@
     function close() {
       clearTimeout(timer);
       if (opened()) preview.hidePopover();
+      releaseOverlay(history);
     }
     function position() {
       const bounds = history.getBoundingClientRect();
@@ -350,9 +460,9 @@
     }
     function schedule() {
       clearTimeout(timer);
-      if (opened()) return;
+      if (opened() || overlay?.fixed || state.dismiss) return;
       timer = setTimeout(() => {
-        if (!history.isConnected || state.dismiss) return;
+        if (!history.isConnected || !claimOverlay(history, close)) return;
         preview.showPopover();
         position();
       }, 180);
@@ -397,6 +507,9 @@
     history.destroy = () => {
       close();
       preview.remove();
+      (history.headerPills || []).forEach(button => {
+        if (button.parentElement === history.parentElement) button.remove();
+      });
       history.remove();
       document.removeEventListener("keydown", escape, true);
       document.removeEventListener("pointerdown", dismissOutside, true);
@@ -423,34 +536,37 @@
   }
 
   function updateHeader(sessions, preview) {
+    const usedInputs = new Set();
     for (const [toolbar, launcher] of launchers) {
       const id=conversationFor(toolbar);
       const reading = sessions.find(session => session.id === id);
       launcher.updatePreview(reading?.usage?.reference_usd, preview.week_usd, preview.rate?.rate);
-      const entry=[...bars.entries()].find(([input])=>conversation(input)===id);
-      const previous = launcher.quotaButton;
-      const button = entry?.[1].usage.pills[3].button;
-      if (previous && previous !== button && previous.parentElement === launcher.parentElement) previous.remove();
-      launcher.quotaButton = button;
-      if (!entry) continue;
-      button.className="rounded-md hover:bg-secondary";
-      style(button,{fontSize:"11px",height:"28px",padding:"0 8px",border:"0",background:"none",
-        cursor:"pointer",color:"var(--muted-foreground,#71717a)",whiteSpace:"nowrap",webkitAppRegion:"no-drag"});
-      if(button.parentElement!==launcher.parentElement)launcher.before(button);
+      const entry=[...bars.entries()].find(([input])=>conversation(input)===id && !usedInputs.has(input));
+      if (entry) usedInputs.add(entry[0]);
+      const buttons = entry?.[1].usage.pills.slice(3, 5).map(pill => pill.button).filter(button => !button.hidden) || [];
+      for (const previous of launcher.headerPills || []) {
+        if (!buttons.includes(previous) && previous.parentElement === launcher.parentElement) previous.remove();
+      }
+      launcher.headerPills = buttons;
+      if (buttons.some((button, index) => button.nextElementSibling !== (buttons[index + 1] || launcher))) {
+        launcher.before(...buttons);
+      }
     }
   }
 
   function placeBar(input, slot) {
     const trigger = modelTrigger(input);
-    const group = trigger?.closest(".agy-composer-footer")?.firstElementChild;
-    if (!group?.contains(trigger)) {
+    const footer = trigger?.closest(".agy-composer-footer");
+    if (!footer || !input.contains(footer)) {
       slot.remove();
       return;
     }
-    if (group.lastElementChild === slot) return;
-    if (getComputedStyle(group).display !== "flex" && slot.parentElement !== group) return;
-    // A zero-basis flex item occupies only the current spare width.
-    group.append(slot);
+    const groups = [...footer.children].filter(element => element !== slot);
+    if (groups.length === 2 && groups[0].contains(trigger)) {
+      if (slot.parentElement !== footer || slot.nextElementSibling !== groups[1]) groups[1].before(slot);
+    } else {
+      slot.remove();
+    }
   }
 
   state.probe = () => ({
@@ -463,6 +579,7 @@
   state.install = ({ html, css }) => {
     if (state.open) return;
     state.open = (id, opener) => {
+      overlay?.close();
       let serial = 0;
       const epoch = crypto.randomUUID();
       let pending;
@@ -555,15 +672,9 @@
         bars.set(input, bar);
       }
       placeBar(input, bar);
-      // 宽度变化（窗口拖动、分屏动画、缩放）后重算断点，避免旧阈值把整条状态条留在隐藏档。
-      const slotWidth = bar.getBoundingClientRect().width;
-      if (Math.abs(slotWidth - (bar.usage.measured || 0)) > 1) {
-        bar.usage.measured = slotWidth;
-        bar.usage.layout();
-      }
-      const callLimit = usage.call_limit ? value(usage.call_limit) + " Token" : "—";
       const modelLimit = usage.model_limit ? value(usage.model_limit) + " Token" : "—";
-      const windowLimit = usage.model_limit ? capacity(usage.model_limit) : "—";
+      const limit = usage.context_limit || usage.model_limit;
+      const windowLimit = limit ? capacity(limit) : "—";
       const context = usage.used != null
         ? compact.format(usage.used) + "/" + windowLimit : windowLimit;
       const contextPercent = usage.context != null ? decimal(usage.context) + "%" : "";
@@ -576,14 +687,14 @@
         return [label + " " + remaining, quota.group + " · " + label + "剩余 " + remaining + reset];
       };
       const stats=bar.usage.pills;
-      const assign=(index,text,detail,short=text,mini=short)=>{
+      const assign=(index,text,detail,short=text)=>{
         const pill=stats[index];
         if (pill.text.textContent!==text) {
           pill.text.textContent=text;
-          pill.button.setAttribute("aria-label",text&&text!=="—" ? pill.name+"："+text : pill.name);
+          const label = index === 4 ? detail.value : text;
+          pill.button.setAttribute("aria-label",label&&label!=="—" ? pill.name+"："+label : pill.name);
         }
-        if (index < 3 && pill.short.textContent!==short) pill.short.textContent=short;
-        if (index < 3 && pill.mini.textContent!==mini) pill.mini.textContent=mini;
+        if (index < 3 && pill.short.textContent !== short) pill.short.textContent = short;
         pill.button.detail=detail;
       };
       const roundsMeta = usage.compactions == null ? "" : " · 压缩 "+value(usage.compactions)+" 次";
@@ -597,36 +708,57 @@
           ["模型生成用时",duration(usage.model_seconds)],["工具调用用时",duration(usage.tool_seconds)],
           ["平均首 Token（TTFT）",usage.average_ttft == null ? "暂无数据" : decimal(usage.average_ttft)+" 秒"],
           ["最近输出速率",usage.speed == null ? "暂无数据" : decimal(usage.speed)+" tok/s"]
-        ]}, [usage.turns == null ? "" : compact.format(usage.turns)+"轮",
-          usage.compactions ? "压缩"+compact.format(usage.compactions) : "",
-          usage.speed == null ? "" : decimal(usage.speed)+"t/s"].filter(Boolean).join("·") || "—",
-          usage.turns == null ? "—" : compact.format(usage.turns)+"轮");
+        ]}, usage.turns == null ? "会话 —" : value(usage.turns)+"轮");
       assign(1, (usage.total == null ? "Token —" : compact.format(usage.total)+" tok")
         +(usage.hit == null ? "" : " · 命中 "+decimal(usage.hit)+"%"), {
         title:"Token 用量",value:value(usage.total)+" tok",rows:[
           ["缓存命中",usage.hit == null ? "暂无数据" : decimal(usage.hit)+"%"],
           ["未缓存输入",value(usage.uncached)+" tok"],["缓存读取",value(usage.cached)+" tok"],
           ["缓存写入",value(usage.written)+" tok"],["输出",value(usage.output)+" tok"]
-        ]}, [usage.total == null ? "" : compact.format(usage.total),
-          usage.hit == null ? "" : decimal(usage.hit)+"%"].filter(Boolean).join("·") || "—",
-          usage.total == null ? "—" : compact.format(usage.total));
+        ]}, (usage.total == null ? "Token —" : compact.format(usage.total))
+          + (usage.hit == null ? "" : " · "+decimal(usage.hit)+"%"));
       const contextReading = [context, contextPercent].filter(Boolean).join(" · ");
       assign(2,contextReading,{
         title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
         rows:[["已用（调用估算）",usage.used == null ? "—" : value(usage.used)+" Token"],
-          ["所选模型窗口",modelLimit],
+          [usage.used == null ? "所选模型窗口" : "计算采用的窗口",limit ? value(limit)+" Token" : "—"],
+          ...(usage.model_limit && limit !== usage.model_limit ? [["模型目录上限",modelLimit]] : []),
           ...(windowMode ? [["所选上下文模式",windowMode]] : []),
-          ...(usage.call_limit ? [["调用记录的上下文预算",callLimit]] : []),
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
           : (usage.call_model ? "最近一次调用 · "+usage.call_model : "") + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
-      },[context, contextPercent].filter(Boolean).join("·"),
-        usage.context != null ? Math.round(usage.context)+"%" : windowLimit);
+      }, contextPercent || context || "—");
       const periods=[period("5h","5h"),period("weekly","周")].filter(Boolean);
       stats[3].button.hidden=!periods.length;
       assign(3,periods.map(item=>item[0]).join(" · "),{
         title:"剩余额度",value:quota?.group||"",rows:periods.map(item=>[item[0],item[1].split("北京时间 ")[1]||"暂无重置时间"])
       });
+      const task = (reading?.id === conversation(input) && reading.usage?.task_progress) || {};
+      const taskState = task.background ? "有后台活动"
+        : {running:"进行中",waiting:"等待操作",idle:"会话空闲"}[task.state] || "状态未记录";
+      const planned = task.total > 0;
+      const progress = planned ? 100 * task.done / task.total : null;
+      const percent = planned ? value(Math.floor(progress), "%") : null;
+      const badge = stats[4].button;
+      badge.hidden = !planned;
+      badge.toggleAttribute("data-measured", planned);
+      badge.toggleAttribute("data-complete", progress === 100);
+      badge.style.setProperty("--agy-task-fraction", planned ? progress + "%" : "0%");
+      const phase = {planning:"规划或复核",implementing:"实施"}[task.last_phase];
+      assign(4,percent ? "任务 " + percent : taskState,{
+        title:"任务进度",value:percent || taskState,progress,progressLabel:"任务清单进度",
+        rows:[["会话状态",taskState],
+          ...(phase ? [["最近一次模型调用",phase]] : []),
+          ...(planned ? [["已完成",value(task.done)+" / "+value(task.total)+" 项"],["进行中",value(task.in_progress)+" 项"]] : [])],
+        note:planned ? "按当前任务清单中已完成的项目统计。" : "当前只读取到运行状态。"
+      });
+      stats[5].button.detail = {
+        title:"会话用量",value:"",rows:[
+          ["会话统计",rounds],["最近输出速率",usage.speed == null ? "—" : decimal(usage.speed)+" tok/s"],
+          ["Token 用量",value(usage.total)+" tok"],["缓存命中",usage.hit == null ? "—" : decimal(usage.hit)+"%"],
+          ["上下文",contextReading || "—"]
+        ]
+      };
       bar.usage.layout();
       bar.usage.paint();
       const fraction = Math.max(0, Math.min(100, usage.context || 0));

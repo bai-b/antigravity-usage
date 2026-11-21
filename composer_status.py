@@ -3,6 +3,8 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime
+from functools import lru_cache
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -11,10 +13,13 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
+from stat import S_ISREG
 import time
 from urllib.parse import urlsplit
 
 from websocket import WebSocketException, create_connection
+
+from pricing import current_at, load_book, refresh_sources, title_key
 
 try:
     from cdp_guard import heal
@@ -23,8 +28,8 @@ except ImportError:  # older installs ship without the self-heal module
         return None
 
 from usage import (APP_DATA, LOOPBACK, ROOT, UUID, Usage, catalog_limit, catalog_selection,
-                   count_tokens, latest_usd_cny, model_catalog, model_label, quota_snapshot, quotas_by_model,
-                   reference_total)
+                   count_tokens, latest_usd_cny, message, model_catalog, model_label, quota_snapshot, quotas_by_model,
+                   readonly, reference_total, seconds)
 
 
 DESKTOP_DATA = Path(os.environ["APPDATA"]) / "Antigravity"
@@ -90,24 +95,47 @@ def renderer_code(authority, script):
     return "if(location.origin===" + origin + "){\n" + script + "\n}"
 
 
-def active_context(rows, selected, catalog, window_mode=""):
+def active_context(rows, selected, catalog, window_mode="", *, prices=None, since=None):
     recent = rows[-1] if rows else {}
     selection = catalog_selection(catalog, selected)
     actual_id = recent.get("model", "")
     actual = catalog.get(actual_id, {})
     actual_label = actual.get("label") or recent.get("label")
+    actual_selection = (catalog_selection(catalog, recent.get("label", "")) or catalog_selection(catalog, actual_id))
     correlated = bool(recent and (actual_id in selection
-                      or model_label(recent.get("label", "")) == model_label(selected)))
+                      or model_label(recent.get("label", "")) == model_label(selected)
+                      or selection.keys() & actual_selection.keys()))
     if actual_id == "gemini-flash-worker-agy" and any(key.startswith("gemini-pro-orchestrator") for key in selection):
         latest_route = next((row for row in reversed(rows) if row["model"] != actual_id), {})
         correlated = latest_route.get("model") in selection
+
+    if not correlated and recent and prices and since is not None:
+        routes = current_at(prices.routes, recent["day"]) or {}
+        selected_routes = {tuple(routes[title_key(entry["label"])]) for entry in selection.values()
+                           if title_key(entry["label"]) in routes}
+        if len(selected_routes) == 1 and datetime.fromisoformat(recent["time"]).timestamp() >= since:
+            planner, executor = next(iter(selected_routes))
+            executed = prices.model(recent) or actual_id
+            if executed == planner:
+                correlated = True
+            elif executed == executor:
+                # A direct worker call belongs to the route only after the
+                # selected planner has appeared in the same user turn.
+                for row in reversed(rows[:-1]):
+                    if datetime.fromisoformat(row["time"]).timestamp() < since:
+                        break
+                    if row["model"] in selection or (prices.model(row) or row["model"]) == planner:
+                        correlated = True
+                        break
     use_recent = bool(selected and correlated)
     used = recent.get("context") if use_recent else None
     configured = catalog_limit(selection)
+    call_limit = recent.get("limit") if use_recent else None
+    context_limit = (call_limit or catalog_limit(actual_selection) or configured) if used is not None else configured
     return {
-        "context": round(100 * used / configured, 1) if used is not None and configured else None,
-        "used": used, "model_limit": configured,
-        "call_limit": recent.get("limit") if use_recent else None,
+        "context": round(100 * used / context_limit, 1) if used is not None and context_limit else None,
+        "used": used, "model_limit": configured, "context_limit": context_limit,
+        "call_limit": call_limit,
         "call_model": actual_label if use_recent else None, "window_mode": window_mode,
         "waiting_for_call": bool(selected and used is None),
         "breakdown": recent.get("breakdown", []) if use_recent else [],
@@ -115,8 +143,12 @@ def active_context(rows, selected, catalog, window_mode=""):
 
 
 def step_statistics(path):
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1) as db:
-        from usage import message, seconds
+    with readonly(path) as db:
+        db.execute("BEGIN")
+        last_input = db.execute(
+            "SELECT metadata FROM steps WHERE step_type=14 ORDER BY idx DESC LIMIT 1"
+        ).fetchone()
+        raw_input = last_input[0] if last_input else None
         turns, steps, tool_time, compactions = 0, 0, 0, 0
         for kind, raw in db.execute("SELECT step_type,metadata FROM steps WHERE status=3"):
             steps += 1
@@ -128,38 +160,126 @@ def step_statistics(path):
                 ended = seconds(metadata, 8)
                 if started and ended and ended >= started:
                     tool_time += ended - started
-        return {"turns": turns, "steps": steps, "tool_seconds": tool_time, "compactions": compactions}
+        return {"turns": turns, "steps": steps, "tool_seconds": tool_time, "compactions": compactions,
+                "_since": seconds(message(raw_input, (1,)), 1)}
+
+
+CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[([ xX/])\]\s+\S")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+PLAN_FILE = re.compile(r"(?:.*[_-])?(?:task|tasks|plan)\.md(?:\.resolved(?:\.\d+)?)?", re.I)
+
+
+@lru_cache(maxsize=64)
+def parsed_checklist(path, _stamp):
+    with path.open("rb") as stream:
+        content = stream.read(256_001)
+    if len(content) > 256_000:
+        return {}
+    marks = []
+    fence = ""
+    for line in content.decode("utf-8-sig", errors="replace").splitlines():
+        boundary = FENCE.match(line)
+        if boundary and (not fence or boundary[1][0] == fence[0] and len(boundary[1]) >= len(fence)):
+            fence = "" if fence else boundary[1]
+        elif not fence and (box := CHECKBOX.match(line)):
+            marks.append(box[1].lower())
+    return {"done": marks.count("x"), "total": len(marks), "in_progress": marks.count("/")} if marks else {}
+
+
+def task_checklist(base, since):
+    if since is None:
+        return {}
+    candidates = []
+    for folder in (base, base / ".system_generated"):
+        try:
+            for path in folder.iterdir():
+                if not PLAN_FILE.fullmatch(path.name):
+                    continue
+                info = path.stat()
+                if info.st_mtime >= since and info.st_size <= 256_000 and S_ISREG(info.st_mode):
+                    candidates.append((info.st_mtime_ns, path))
+        except OSError:
+            continue
+    for stamp, path in sorted(candidates, reverse=True):
+        try:
+            progress = parsed_checklist(path, stamp)
+        except OSError:
+            continue
+        if progress:
+            return progress
+    return {}
+
+
+def task_progress(app_data, conversation, stats, recent=None, prices=None):
+    status = ""
+    background = False
+    try:
+        with readonly(app_data / "conversation_summaries.db") as db:
+            row = db.execute(
+                "SELECT status,not_fully_idle FROM conversation_summaries WHERE conversation_id=?", (conversation,)
+            ).fetchone()
+            if row:
+                runtime, background = row
+                status = {
+                    "CASCADE_RUN_STATUS_RUNNING": "running",
+                    "CASCADE_RUN_STATUS_WAITING_FOR_USER": "waiting",
+                    "CASCADE_RUN_STATUS_IDLE": "idle",
+                }.get(runtime, "")
+    except (OSError, sqlite3.Error):
+        pass
+    since = stats.get("_since")
+    checklist = task_checklist(app_data / "brain" / conversation, since)
+    phase = ""
+    if checklist and recent and prices:
+        try:
+            if datetime.fromisoformat(recent["time"]).timestamp() >= since:
+                phase = prices.route_phase(recent)
+        except ValueError:
+            pass
+    return {"state": status, "background": bool(background) and status == "idle", "last_phase": phase, **checklist}
 
 
 def session_metrics(usage, conversation, selected="", catalog=None, window_mode=""):
     catalog = catalog or {}
     if not UUID.fullmatch(conversation):
         return {"reference_usd": 0, "compactions": 0, **active_context([], selected, catalog, window_mode)}
-    path = APP_DATA / "conversations" / (conversation + ".db")
+    path = usage.app_data / "conversations" / (conversation + ".db")
     try:
         rows = usage.read_conversation(path)
     except FileNotFoundError:
         rows = []
     except (OSError, ValueError, sqlite3.Error, OverflowError):
         return {}
+    cached_stats = getattr(usage, "step_stats", {})
+    usage.step_stats = cached_stats
+    stats = {}
+    prices = load_book(usage.app_data)
+    if path in usage.cached:
+        version = (usage.cached[path][0], prices)
+        if path not in cached_stats or cached_stats[path][0] != version:
+            try:
+                stats = step_statistics(path)
+            except (OSError, sqlite3.Error, TypeError, ValueError, OverflowError):
+                pass
+            else:
+                stats["reference_usd"] = reference_total(rows, prices)
+                cached_stats[path] = (version, stats)
+        else:
+            stats = cached_stats[path][1]
+    progress = task_progress(usage.app_data, conversation, stats, rows[-1] if rows else None, prices)
+    display_stats = {key: value for key, value in stats.items() if not key.startswith("_")}
     if not rows:
-        return {"total": 0, "reference_usd": 0, "compactions": getattr(usage, "compactions", {}).get(path.stem, 0),
-                **active_context(rows, selected, catalog, window_mode)}
+        return {"total": 0, "reference_usd": 0, "compactions": usage.compactions.get(path.stem, 0),
+                **display_stats, "task_progress": progress, **active_context(rows, selected, catalog, window_mode)}
     recent = rows[-1]
     total = sum(map(count_tokens, rows))
     input_tokens = total - sum(row["output"] for row in rows)
-    cached_stats = getattr(usage, "step_stats", {})
-    usage.step_stats = cached_stats
-    version = usage.cached[path][0]
-    if path not in cached_stats or cached_stats[path][0] != version:
-        stats = step_statistics(path)
-        stats["reference_usd"] = reference_total(rows)
-        cached_stats[path] = (version, stats)
     timings = [row["ttft"] for row in rows if row.get("ttft") is not None]
     duration = sum(row["seconds"] or 0 for row in rows)
     return {
         "total": total,
-        **cached_stats[path][1],
+        **display_stats,
+        "task_progress": progress,
         "model_seconds": duration,
         "average_ttft": sum(timings) / len(timings) if timings else None,
         "uncached": sum(row["uncached"] for row in rows),
@@ -168,7 +288,7 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
         "output": sum(row["output"] for row in rows),
         "hit": round(100 * sum(row["cached"] for row in rows) / input_tokens, 1) if input_tokens else None,
         "speed": round(recent["output"] / recent["seconds"], 1) if recent["seconds"] else None,
-        **active_context(rows, selected, catalog, window_mode),
+        **active_context(rows, selected, catalog, window_mode, prices=prices, since=stats.get("_since")),
     }
 
 
@@ -177,7 +297,7 @@ def dashboard_report(usage, filters, snapshot, catalog, fx):
         report = usage.report(
             filters.get("start", ""), filters.get("end", ""), filters.get("conversation", ""),
             True, filters.get("only") is True, catalog, filters.get("hours") or 0,
-            filters.get("day") is True,
+            filters.get("day") is True, health=True, health_window=filters.get("health_window", "24h"),
         )
         return {"report": report | {"quota": snapshot, "latest_fx": fx}}
     except (OSError, sqlite3.Error, TypeError, ValueError) as error:
@@ -210,6 +330,7 @@ def poll(guard):
     executor.submit(history.report, convert=True)
     rate_job = rate_executor.submit(latest_usd_cny)
     rate_due, week_due = 0, 0
+    prices_job, prices_due = None, 0
     latest_rate, week_usd = None, None
     had_windows, last_rate_request = False, time.monotonic()
     cached_sessions = {}
@@ -250,6 +371,17 @@ def poll(guard):
             had_windows = bool(targets)
             if rate_job is None and targets and now >= rate_due:
                 rate_job, last_rate_request = rate_executor.submit(latest_usd_cny), now
+            if prices_job is not None and prices_job.done():
+                try:
+                    if prices_job.result():
+                        cached_sessions.clear()
+                        week_due = 0
+                except (OSError, ValueError):
+                    LOG.debug("Could not refresh public pricing sources", exc_info=True)
+                prices_job = None
+            if prices_job is None and targets and now >= prices_due:
+                prices_job = rate_executor.submit(refresh_sources, APP_DATA)
+                prices_due = now + 300
             if week_job is not None and week_job.done():
                 try:
                     week_usd = week_job.result()
@@ -277,7 +409,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 27 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 38 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
@@ -292,7 +424,7 @@ def poll(guard):
                     if time.monotonic() >= expires:
                         snapshot = quota_snapshot(https_port=port)
                         quota_cache[port] = (time.monotonic() + (60 if snapshot["available"] else 10), snapshot)
-                    quotas = quotas_by_model(snapshot["groups"], {item["model"] for item in probe["inputs"]})
+                    quotas = quotas_by_model(snapshot["groups"], {item["model"] for item in probe["inputs"]}, catalog)
                     sessions = []
                     for item in probe["inputs"]:
                         cache_key = (port, item["id"], item["model"], item["windowMode"])

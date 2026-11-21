@@ -94,7 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             report = self.server.usage.report(
                 args.get("start", ""), args.get("end", ""), args.get("conversation", ""),
                 args.get("fx") == "1", args.get("only") == "1", self.server.models(),
-                int(hours) if hours.isdigit() else 0, args.get("day") == "1",
+                int(hours) if hours.isdigit() else 0, args.get("day") == "1", health=True,
+                health_window=args.get("health_window", "24h"),
             )
             report["quota"] = self.server.quotas()
         except (ValueError, OSError) as error:

@@ -1,10 +1,11 @@
 (() => {
-const VERSION = 27;
+const VERSION = 38;
 function createDashboard(root, load, initialConversation) {
 const $ = id => root.querySelector("#" + id);
 const NS = "http://www.w3.org/2000/svg";
 const whole = new Intl.NumberFormat("zh-CN");
 const precise = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2, minimumFractionDigits: 2});
+const smallMoney = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 6, minimumFractionDigits: 2});
 const compact = new Intl.NumberFormat("en", {notation: "compact", maximumFractionDigits: 1});
 const localDate = new Intl.DateTimeFormat("sv-SE", {timeZone: "Asia/Shanghai"});
 const localTime = new Intl.DateTimeFormat("sv-SE", {
@@ -26,10 +27,15 @@ let loading = false;
 let pending = false;
 let disposed = false;
 let metric = "usd";
+let chartMode = "bars";
 let view = "daily";
 let lastReport = null;
 let windowHours = 0;
 let windowDay = false;
+let healthWindow = "24h";
+const heatmaps = Object.fromEntries(["health", "usage-heat"].map(prefix =>
+  [prefix, {page: 0, selected: new Set(), signature: "", choices: ""}]));
+const healthName = label => label || "未归属错误";
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -80,6 +86,154 @@ function table(headers, rows, empty) {
   return node;
 }
 
+function drawHeatPicker(prefix, models, state) {
+  const {selected} = state;
+  const labels = [...new Set([...models.map(row => row.label), ...selected])];
+  const trigger = $(prefix + "-picker-caption");
+  const picker = $(prefix + "-picker");
+  trigger.disabled = !labels.length;
+  if (!labels.length && picker.matches(":popover-open")) picker.hidePopover();
+  trigger.textContent = !selected.size ? "全部模型"
+    : selected.size === 1 ? healthName(selected.values().next().value)
+      : "已选 " + num(selected.size) + " 项";
+  const choices = $(prefix + "-options");
+  const key = JSON.stringify(labels);
+  if (key !== state.choices) {
+    state.choices = key;
+    const focused = root.activeElement || document.activeElement;
+    const options = labels.map(value => {
+      const label = element("label");
+      const input = element("input");
+      input.type = "checkbox";
+      input.value = value;
+      label.append(input, element("span", healthName(value)));
+      return label;
+    });
+    const wasFocused = choices.contains(focused);
+    choices.replaceChildren(...options);
+    if (wasFocused) {
+      const target = options.find(label => label.firstChild.value === focused.value)?.firstChild;
+      (target || trigger).focus({preventScroll: true});
+    }
+  }
+  for (const input of choices.querySelectorAll("input")) {
+    input.checked = selected.has(input.value);
+  }
+}
+
+function heatMoney(amount, mark = "$") {
+  if (amount == null) return "—";
+  if (amount > 0 && amount < 0.000001) return "< " + mark + "0.000001";
+  return mark + (amount < 0.01 ? smallMoney : precise).format(amount);
+}
+
+function heatDetail(heatMetric, column, row, point) {
+  if (heatMetric === "health") {
+    if (!row.label) return column + " · " + num(point.errors) + " 条会话错误，缺少对应模型记录";
+    const timing = point.median_ttft == null ? "暂无首 Token 耗时"
+      : "首 Token 中位数 " + precise.format(point.median_ttft) + " 秒（" + num(point.timed) + " 条）";
+    return column + " · " + (point.errors ? "有异常" : "无异常") + " · 完成 " + num(point.done)
+      + " · 异常 " + num(point.errors) + " · " + timing;
+  }
+  if (heatMetric !== "usd") {
+    return column + " · " + num(point[heatMetric]) + (heatMetric === "total" ? " Token" : " 次请求");
+  }
+  const cost = point.usd == null ? "暂无可计价记录" : "API 参考价 " + heatMoney(point.usd)
+    + (point.cny == null ? "" : "（" + heatMoney(point.cny, "¥") + "）");
+  return column + " · " + cost + (point.unpriced ? " · " + num(point.unpriced) + " 次未计价" : "");
+}
+
+function drawHeatmap(prefix) {
+  const grid = $(prefix + "-grid");
+  const health = prefix === "health";
+  const heatMetric = health ? "health" : metric;
+  const state = heatmaps[prefix];
+  const data = health ? lastReport?.health : lastReport?.usage_heatmap;
+  const buckets = data?.buckets || [];
+  const models = data?.models || [];
+  const hourly = data?.window === "24h" || data?.granularity === "hour";
+  const width = hourly ? 9 : 7;
+  const pageSize = hourly ? 27 : 35;
+  const pages = Math.max(1, Math.ceil(buckets.length / pageSize));
+  state.page = Math.max(0, Math.min(state.page, pages - 1));
+  const end = buckets.length - state.page * pageSize;
+  const columns = buckets.slice(Math.max(0, end - pageSize), end);
+  $(health ? "health-caption" : "chart-caption").textContent = columns.length ? columns[0] + " 至 " + columns.at(-1)
+    + " · 北京时间 · 每格一" + (hourly ? "小时" : "天") + "，从左到右" : "北京时间";
+  const key = JSON.stringify([heatMetric, state.page, [...state.selected], data]);
+  if (key === state.signature) return;
+  state.signature = key;
+  drawHeatPicker(prefix, models, state);
+  if (!health) $("usage-heat-unpriced").hidden = metric !== "usd";
+  $(prefix + "-pages").hidden = pages === 1;
+  $(prefix + "-older").disabled = state.page + 1 >= pages;
+  $(prefix + "-newer").disabled = state.page === 0;
+  if (!models.length) {
+    grid.replaceChildren(element("p", "当前范围暂无模型记录", "empty"));
+    return;
+  }
+  let maximum = 0;
+  if (!health) {
+    for (const row of models) {
+      for (const point of Object.values(row.cells)) maximum = Math.max(maximum, point[heatMetric] || 0);
+    }
+  }
+  const focused = root.activeElement || document.activeElement;
+  const active = grid.contains(focused) ? focused.dataset?.healthCell : null;
+  let nextFocus;
+  const visible = state.selected.size ? models.filter(row => state.selected.has(row.label)) : models;
+  const cards = visible.map(row => {
+    const name = healthName(row.label);
+    const values = columns.flatMap(column => {
+      const point = row.cells[column];
+      const amount = point && (health ? point.done + point.errors : point[heatMetric]);
+      return amount == null ? [] : [amount];
+    });
+    const count = values.reduce((sum, amount) => sum + amount, 0);
+    const card = element("article", null, "health-card");
+    const header = element("header", null, "health-card-header");
+    const heading = element("h3", name);
+    if (row.ids.length && (row.ids.length > 1 || row.ids[0] !== name)) {
+      heading.title = row.ids.join(" · ");
+    }
+    const total = element("p", heatMetric === "usd" ? heatMoney(values.length ? count : null) : num(count), "health-total");
+    if (heatMetric !== "usd") total.append(element("small", heatMetric === "total" ? "Token" : row.label ? "次" : "条"));
+    header.append(heading, total);
+
+    const cells = element("div", null, "health-cells");
+    cells.style.setProperty("--heat-columns", width);
+    const selected = element("p", "选择方格查看时段详情", "health-selection");
+    for (const column of columns) {
+      const point = row.cells[column];
+      if (!point) {
+        const empty = element("span", null, "health-cell health-empty");
+        empty.title = column + " · 无记录";
+        cells.append(empty);
+        continue;
+      }
+      const amount = point[heatMetric];
+      const tone = health ? (point.errors ? "health-error" : "health-done")
+        : amount == null ? "heat-unpriced" : "heat-usage";
+      const button = element("button", null, "health-cell " + tone);
+      if (tone === "heat-usage") button.dataset.level = Math.max(1, Math.ceil(5 * Math.sqrt(amount / (maximum || 1))));
+      const text = heatDetail(heatMetric, column, row, point);
+      button.type = "button";
+      button.title = text;
+      button.dataset.healthCell = name + "|" + column;
+      button.setAttribute("aria-label", name + " · " + text);
+      for (const event of ["pointerenter", "focus", "click"]) {
+        button.addEventListener(event, () => { selected.textContent = text; });
+      }
+      if (button.dataset.healthCell === active) nextFocus = button;
+      cells.append(button);
+    }
+    card.append(header, cells, selected);
+    return card;
+  });
+  grid.replaceChildren(...(cards.length ? cards : [element("p", "所选模型在当前筛选下暂无记录", "empty")]));
+  nextFocus?.focus({preventScroll: true});
+}
+
 function pick(day) {
   return metric === "usd" ? (day.usd || 0) : metric === "calls" ? day.calls : day.total;
 }
@@ -102,6 +256,18 @@ function seriesOf(report) {
   return report.granularity === "hour" && report.hourly ? report.hourly : report.days;
 }
 
+function drawUsageChart() {
+  const heat = chartMode === "heat";
+  if (!heat && $("usage-heat-picker").matches(":popover-open")) $("usage-heat-picker").hidePopover();
+  $("bar-chart").hidden = heat;
+  $("usage-heat-chart").hidden = !heat;
+  if (!lastReport) return;
+  const name = {usd: "费用", total: "Token 用量", calls: "请求数"}[metric];
+  $("chart-title").textContent = name + " · 按" + (lastReport.granularity === "hour" ? "小时" : "天");
+  if (heat) drawHeatmap("usage-heat");
+  else chart(seriesOf(lastReport));
+}
+
 function chart(days) {
   const svg = $("chart-svg");
   const caption = $("chart-caption");
@@ -121,11 +287,6 @@ function chart(days) {
   const max = Math.max(...values, 1);
   const slot = W / days.length;
   const width = Math.max(3, Math.min(56, slot * 0.62));
-  const title = $("chart-title");
-  if (title) {
-    title.textContent = (metric === "usd" ? "费用" : metric === "calls" ? "请求" : "Token")
-      + " · 按" + (days[0].hour ? "小时" : "天");
-  }
   const gridGroup = shape("g", {class: "grid"});
   for (let step = 0; step <= 3; step++) {
     const gy = top + (H - top) * step / 3;
@@ -215,16 +376,23 @@ function shares(models) {
   }));
 }
 
+function modelName(model) {
+  const name = element("span", model.model);
+  if (model.ids?.length) name.title = model.ids.join(" · ");
+  return name;
+}
+
 function renderTable(report, rows) {
   rows = rows || seriesOf(report);
   const area = $("table-area");
   const note = $("view-note");
   if (view === "models") {
-    note.textContent = "未计价 = 公开价格表里没有匹配项，只计 Token。";
+    note.textContent = "规划和执行按各自的模型计价。无法确认模型或找不到公开价格的记录只计 Token。";
     area.replaceChildren(table(
-      ["模型", "调用", "Token", "已计价 Token", "参考费用", "平均每次", "未计价"],
+      ["模型", "API 计价模型", "调用", "Token", "已计价 Token", "参考费用", "平均每次", "未计价"],
       report.models.map(model => [
-        model.model, num(model.calls), num(model.total), num(model.priced_tokens), usd(model.usd),
+        modelName(model), model.billing_models?.join(" · ") || "—",
+        num(model.calls), num(model.total), num(model.priced_tokens), usd(model.usd),
         model.priced ? usd(model.usd / model.priced) : "—",
         model.unpriced ? element("span", num(model.unpriced), "tag warn") : "0"
       ]), "当前筛选没有数据"));
@@ -233,9 +401,9 @@ function renderTable(report, rows) {
   if (view === "recent") {
     note.textContent = "按时间倒序的最近模型调用。";
     area.replaceChildren(table(
-      ["时间", "模型", "未缓存输入", "缓存读取", "输出", "生成速率"],
-      report.recent.map(row => [stamp(row.time), row.label, num(row.uncached), num(row.cached),
-        num(row.output), speed(ratio(row.output, row.seconds))]), "暂无调用记录"));
+      ["时间", "模型", "API 计价模型", "未缓存输入", "缓存读取", "输出", "生成速率", "参考费用"],
+      report.recent.map(row => [stamp(row.time), row.label, row.billing_model || "—", num(row.uncached),
+        num(row.cached), num(row.output), speed(ratio(row.output, row.seconds)), usd(row.usd)]), "暂无调用记录"));
     return;
   }
   if (view === "sessions") {
@@ -295,12 +463,12 @@ function draw(report) {
   const sum = report.all;
   $("range-note").textContent = (report.range[0] ? report.range.join(" 至 ") : "全部记录")
     + (current ? " · " + (follow ? "最近活跃 · " : "已选 · ") + current.title : "");
-  const avg = sum.calls ? sum.usd / sum.calls : null;
+  const avg = sum.priced ? sum.usd / sum.priced : null;
   tiles([
     ["API 参考费用", usd(sum.usd),
       cny(sum.cny) + " · 已计价 " + pct(ratio(sum.priced_tokens, sum.total))
         + (sum.unpriced ? " · " + num(sum.unpriced) + " 次未计入" : ""), true],
-    ["请求数", num(sum.calls), "平均每次 " + usd(avg) + " · " + num(sum.calls) + " 次模型调用"],
+    ["请求数", num(sum.calls), "已计价平均 " + usd(avg)],
     ["Token 总量", num(sum.total), "读取 " + short(sum.cached) + " · 写入 " + short(sum.written) + " · 输出 " + short(sum.output)],
     ["缓存命中率", pct(sum.hit), "缓存节省 " + usd(sum.savings) + " · 按读取价与输入价差额"]
   ]);
@@ -311,6 +479,12 @@ function draw(report) {
     ? "暂未获取历史汇率，人民币金额留空。"
     : (report.fx.fallback ? "汇率接口不可用，已按离线兜底汇率折算；" : "")
       + "参考费用为 API 等值估算，未匹配公开价格的模型仍计入 Token 总量。");
+  const sources = Object.values(report.price_sources || {});
+  const sourcesLine = $("pricing-sources");
+  sourcesLine.hidden = !sources.length;
+  sourcesLine.textContent = sources.map(source => source.name + " · "
+    + (source.checked ? "核验于 " + source.checked : "快照 " + source.bundled)
+    + (source.failed ? "（本次核验失败）" : "")).join("　");
   const latestFx = $("latest-fx");
   latestFx.hidden = !report.latest_fx;
   if (report.latest_fx) {
@@ -323,8 +497,9 @@ function draw(report) {
   $("count-sessions").textContent = num(report.sessions.length);
   $("count-quota").textContent = report.quota && report.quota.available
     ? num((report.quota.groups || []).length) : "";
-  chart(rows);
+  drawUsageChart();
   shares(report.models);
+  drawHeatmap("health");
   renderTable(report, rows);
 }
 
@@ -336,10 +511,10 @@ async function update(showStatus = true) {
   loading = true;
   if (showStatus) $("state").textContent = "正在读取…";
   const filters = {start: $("start").value, end: $("end").value, conversation: follow ? "" : wanted,
-    only: $("only").checked, hours: windowHours, day: windowDay};
+    only: $("only").checked, hours: windowHours, day: windowDay, health_window: healthWindow};
   try {
     const result = await load(filters);
-    if (disposed) return;
+    if (disposed || filters.health_window !== healthWindow) return;
     draw(result);
     $("state").textContent = "更新于 " + stamp(new Date().toISOString());
   } catch (error) {
@@ -356,23 +531,62 @@ async function update(showStatus = true) {
 $("session").addEventListener("change", () => {
   wanted = $("session").value;
   follow = !wanted;
+  heatmaps["usage-heat"].page = heatmaps.health.page = 0;
   update();
 });
-$("filter").addEventListener("click", () => update());
+$("filter").addEventListener("click", () => {
+  heatmaps["usage-heat"].page = 0;
+  update();
+});
 $("refresh").addEventListener("click", () => update());
-$("only").addEventListener("change", () => update());
+$("only").addEventListener("change", () => {
+  heatmaps["usage-heat"].page = heatmaps.health.page = 0;
+  update();
+});
+for (const [prefix, state] of Object.entries(heatmaps)) {
+  $(prefix + "-options").addEventListener("change", event => {
+    const input = event.target;
+    if (input.checked) state.selected.add(input.value);
+    else state.selected.delete(input.value);
+    drawHeatmap(prefix);
+  });
+  $(prefix + "-all").addEventListener("click", () => {
+    state.selected.clear();
+    drawHeatmap(prefix);
+  });
+  for (const [suffix, delta] of [["older", 1], ["newer", -1]]) {
+    $(prefix + "-" + suffix).addEventListener("click", () => {
+      state.page += delta;
+      drawHeatmap(prefix);
+    });
+  }
+}
+root.querySelectorAll("[data-health-window]").forEach(button => button.addEventListener("click", () => {
+  healthWindow = button.dataset.healthWindow;
+  heatmaps.health.page = 0;
+  root.querySelectorAll("[data-health-window]").forEach(control =>
+    control.setAttribute("aria-pressed", String(control === button)));
+  update();
+}));
 $("fold").addEventListener("click", () => {
   const button = $("fold");
   const open = button.getAttribute("aria-expanded") === "true";
   button.setAttribute("aria-expanded", String(!open));
   button.textContent = open ? "⌃" : "⌄";
+  if (open && $("usage-heat-picker").matches(":popover-open")) $("usage-heat-picker").hidePopover();
   $("chart-area").classList.toggle("collapsed", open);
 });
 root.querySelectorAll("[data-metric]").forEach(button => button.addEventListener("click", () => {
   metric = button.dataset.metric;
   root.querySelectorAll("[data-metric]").forEach(control =>
     control.setAttribute("aria-pressed", String(control === button)));
-  if (lastReport) chart(seriesOf(lastReport));
+  drawUsageChart();
+}));
+root.querySelectorAll("[data-chart-mode]").forEach(button => button.addEventListener("click", () => {
+  chartMode = button.dataset.chartMode;
+  root.querySelectorAll("[data-chart-mode]").forEach(control =>
+    control.setAttribute("aria-pressed", String(control === button)));
+  drawUsageChart();
 }));
 function setView(next) {
   view = next;
@@ -383,15 +597,16 @@ root.querySelectorAll("[data-view]").forEach(button => button.addEventListener("
   setView(button.dataset.view);
   if (lastReport) renderTable(lastReport, seriesOf(lastReport));
 }));
-root.querySelectorAll("[data-days], [data-hours]").forEach(button => button.addEventListener("click", () => {
-  root.querySelectorAll("[data-days], [data-hours]").forEach(control =>
-    control.setAttribute("aria-pressed", String(control === button)));
+const datePresets = root.querySelectorAll("[data-days], [data-hours]");
+datePresets.forEach(button => button.addEventListener("click", () => {
+  datePresets.forEach(control => control.setAttribute("aria-pressed", String(control === button)));
   const hours = Number(button.dataset.hours || 0);
   const days = Number(button.dataset.days || 0);
   const today = localDate.format(new Date());
   const first = new Date(today + "T12:00:00+08:00");
   first.setTime(first.getTime() - (days - 1) * 86400000);
   if (view !== "daily") setView("daily");
+  heatmaps["usage-heat"].page = 0;
   windowDay = !hours && days === 1;
   windowHours = hours || (windowDay ? 24 : 0);
   $("start").value = !windowHours && days ? localDate.format(first) : "";
@@ -402,9 +617,9 @@ for (const input of [$("start"), $("end")]) {
   input.addEventListener("change", () => {
     windowHours = 0;
     windowDay = false;
+    heatmaps["usage-heat"].page = 0;
     setView("daily");
-    root.querySelectorAll("[data-days], [data-hours]").forEach(
-      control => control.setAttribute("aria-pressed", "false"));
+    datePresets.forEach(control => control.setAttribute("aria-pressed", "false"));
   });
 }
 update();

@@ -2,7 +2,7 @@
   "basis": "Google Cloud Agent Platform，Global 标准 API 参考价，美元／百万 Token",
   "google_source": "https://cloud.google.com/model-garden/pricing",
   "partner_source": "https://cloud.google.com/model-garden/partner-models/pricing?hl=en",
-  "checked": "2026-11-14",
+  "checked": "2026-11-20",
   "models": {
     "gemini-3.8-flash": [
       {"from": "2026-08-13", "input": 0.75, "read": 0.075, "output": 3.75},
@@ -16,6 +16,14 @@
       {"from": "2026-10-13", "input": 2.00, "read": 0.10, "output": 10.00},
       {"from": "2026-12-01", "input": 4.00, "read": 0.20, "output": 20.00}
     ],
+    "gemini-4-neon": [
+      {"from": "2026-11-18", "input": 3.00, "read": 0.15, "output": 15.00},
+      {"from": "2027-01-12", "input": 3.00, "read": 0.15, "write": 3.75, "output": 15.00}
+    ],
+    "gemini-4-hydrogen": [
+      {"from": "2026-11-12", "input": 1.50, "read": 0.075, "output": 7.50},
+      {"from": "2027-01-12", "input": 1.50, "read": 0.075, "write": 1.875, "output": 7.50}
+    ],
     "claude-opus-5-5": [
       {"from": "2026-10-12", "input": 4.00, "read": 0.20, "write": 5.00, "output": 20.00}
     ],
@@ -26,12 +34,23 @@
       {"from": "2026-10-12", "input": 2.00, "read": 0.20, "write": 2.50, "output": 10.00}
     ]
   },
-  "aliases": {
-    "gemini-pro-orchestrator-argon": "gemini-4-argon",
-    "gemini-pro-orchestrator-carbon": "gemini-4-carbon",
-    "gemini-flash-worker-agy": "gemini-3.8-flash",
-    "gemini-4-hydrogen": "gemini-4-carbon",
-    "gemini-4-hydrogen-orchestrator": "gemini-4-hydrogen"
+  "route_ids": {
+    "gemini-pro-orchestrator-argon": "orchestrator (argon)",
+    "gemini-pro-orchestrator": "orchestrator (carbon)",
+    "gemini-pro-orchestrator-carbon": "orchestrator (carbon)",
+    "gemini-pro-orchestrator-neon": "orchestrator (neon)",
+    "model-1537": "orchestrator (neon)",
+    "model-1681": "orchestrator (argon)"
   },
-  "alias_note": "Antigravity 的 orchestrator / worker / hydrogen 角色模型没有独立公开价，按等价公开模型计价。"
+  "routes": {
+    "2026-11-12": {
+      "orchestrator (argon)": ["gemini-4-argon", "gemini-4-hydrogen"],
+      "orchestrator (carbon)": ["gemini-4-carbon", "gemini-4-hydrogen"]
+    },
+    "2026-11-18": {
+      "orchestrator (argon)": ["gemini-4-argon", "gemini-4-hydrogen"],
+      "orchestrator (carbon)": ["gemini-4-carbon", "gemini-4-hydrogen"],
+      "orchestrator (neon)": ["gemini-4-neon", "gemini-4-hydrogen"]
+    }
+  }
 }

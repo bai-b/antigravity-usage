@@ -47,13 +47,19 @@
         <h2 id="chart-title">费用 · 按天</h2>
         <p class="dim" id="chart-caption">—</p>
       </div>
-      <div class="seg" role="group" aria-label="图表指标">
-        <button type="button" data-metric="usd" aria-pressed="true">费用</button>
-        <button type="button" data-metric="total" aria-pressed="false">Token</button>
-        <button type="button" data-metric="calls" aria-pressed="false">请求</button>
+      <div class="health-controls">
+        <div class="seg" role="group" aria-label="图表指标">
+          <button type="button" data-metric="usd" aria-pressed="true">费用</button>
+          <button type="button" data-metric="total" aria-pressed="false">Token 用量</button>
+          <button type="button" data-metric="calls" aria-pressed="false">请求数</button>
+        </div>
+        <div class="seg" role="group" aria-label="图表形式">
+          <button type="button" data-chart-mode="bars" aria-pressed="true" aria-controls="bar-chart">柱状图</button>
+          <button type="button" data-chart-mode="heat" aria-pressed="false" aria-controls="usage-heat-chart">热力图</button>
+        </div>
       </div>
     </div>
-    <div class="chart">
+    <div id="bar-chart" class="chart">
       <div class="yaxis" id="yaxis" aria-hidden="true"></div>
       <div class="plot" id="plot">
         <svg id="chart-svg" viewBox="0 0 1000 240" preserveAspectRatio="none" aria-label="用量趋势柱状图" role="img"></svg>
@@ -61,12 +67,69 @@
       </div>
       <div class="xaxis" id="xaxis" aria-hidden="true"></div>
     </div>
+    <div id="usage-heat-chart" hidden>
+      <div class="health-controls heat-toolbar">
+        <button id="usage-heat-picker-caption" class="ghost dropdown-trigger" type="button" popovertarget="usage-heat-picker" disabled>全部模型</button>
+        <div id="usage-heat-pages" class="seg" role="group" aria-label="用量热力图分页" hidden>
+          <button id="usage-heat-older" type="button">更早</button>
+          <button id="usage-heat-newer" type="button">更新</button>
+        </div>
+      </div>
+      <div id="usage-heat-picker" class="health-picker dropdown-panel" popover="auto">
+        <div class="health-picker-head">
+          <p class="dim" id="usage-heat-picker-hint">勾选一个或多个模型查看</p>
+          <button id="usage-heat-all" class="ghost" type="button">显示全部</button>
+        </div>
+        <div id="usage-heat-options" class="health-options" role="group" aria-labelledby="usage-heat-picker-hint"></div>
+      </div>
+      <div class="health-legend" aria-label="用量热力图图例">
+        <span>低 <span class="heat-scale" aria-hidden="true">
+          <i class="health-cell heat-usage" data-level="1"></i><i class="health-cell heat-usage" data-level="2"></i>
+          <i class="health-cell heat-usage" data-level="3"></i><i class="health-cell heat-usage" data-level="4"></i>
+          <i class="health-cell heat-usage" data-level="5"></i>
+        </span> 高</span>
+        <span>空格表示无记录</span>
+        <span id="usage-heat-unpriced"><i class="health-cell heat-unpriced" aria-hidden="true"></i>有记录，未能计价</span>
+      </div>
+      <div id="usage-heat-grid" class="health-grid"></div>
+    </div>
   </div>
 </section>
 
   <section class="card">
     <div class="card-head"><div class="headline"><h2>模型分布</h2><p class="dim" id="share-note">—</p></div></div>
     <div id="shares" class="shares"></div>
+  </section>
+
+  <section class="card" aria-labelledby="health-title">
+    <div class="card-head">
+      <div class="headline"><h2 id="health-title">模型调用健康热力图</h2><p class="dim" id="health-caption">北京时间</p></div>
+      <div class="health-controls">
+        <div class="seg" role="group" aria-label="健康热力图时间范围">
+          <button type="button" data-health-window="24h" aria-pressed="true">最近 24 小时</button>
+          <button type="button" data-health-window="month" aria-pressed="false">本月</button>
+          <button type="button" data-health-window="all" aria-pressed="false">全部</button>
+        </div>
+        <button id="health-picker-caption" class="ghost dropdown-trigger" type="button" popovertarget="health-picker" disabled>全部模型</button>
+        <div id="health-pages" class="seg" role="group" aria-label="健康热力图分页" hidden>
+          <button id="health-older" type="button">更早</button>
+          <button id="health-newer" type="button">更新</button>
+        </div>
+      </div>
+    </div>
+    <div id="health-picker" class="health-picker dropdown-panel" popover="auto">
+      <div class="health-picker-head">
+        <p class="dim" id="health-picker-hint">勾选一个或多个模型查看</p>
+        <button id="health-all" class="ghost" type="button">显示全部</button>
+      </div>
+      <div id="health-options" class="health-options" role="group" aria-labelledby="health-picker-hint"></div>
+    </div>
+    <div id="health-legend" class="health-legend" aria-label="健康热力图图例">
+      <span><i class="health-cell health-done" aria-hidden="true"></i>无异常</span>
+      <span><i class="health-cell health-error" aria-hidden="true"></i>有异常</span>
+      <span>空格表示无记录</span>
+    </div>
+    <div id="health-grid" class="health-grid"></div>
   </section>
 
   <section class="card">
@@ -86,6 +149,7 @@
   <footer>
     <p id="coverage">本机 Antigravity 桌面端 · UTC+08:00</p>
     <p id="pricing"></p>
+    <p id="pricing-sources" hidden></p>
     <p id="latest-fx" hidden></p>
   </footer>
 </div>
