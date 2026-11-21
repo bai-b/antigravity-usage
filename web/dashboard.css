@@ -161,7 +161,7 @@ footer { display: grid; gap: 3px; font-size: 11.5px; color: var(--dim); }
 .health-card-header h3 { margin: 0; font-size: 13px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
 .health-total { color: var(--accent); font-size: 18px; font-weight: 650; line-height: 1; white-space: nowrap; }
 .health-total small { margin-inline-start: 4px; color: var(--dim); font-size: 11px; font-weight: 400; }
-.health-cells { display: grid; grid-template-columns: repeat(var(--heat-columns), minmax(0, 1fr)); gap: 4px; }
+.health-cells { display: grid; grid-template-columns: repeat(auto-fill, 5px); gap: 4px; justify-content: start; align-content: start; }
 .health-cell {
   display: grid;
   place-items: center;
