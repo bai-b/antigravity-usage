@@ -18,6 +18,7 @@ from usage import APP_DATA, ROOT, UUID, Usage, model_catalog, quota_snapshot
 
 ASSETS = {
     "": ("dashboard.html", "text/html"),
+    "theme.css": ("theme.css", "text/css"),
     "dashboard.css": ("dashboard.css", "text/css"),
     "dashboard.js": ("dashboard.js", "text/javascript"),
 }

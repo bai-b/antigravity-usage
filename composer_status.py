@@ -1,6 +1,7 @@
 """Add a local usage row to the Antigravity desktop composer through its loopback inspector."""
 
 import argparse
+from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime
@@ -28,7 +29,7 @@ except ImportError:  # older installs ship without the self-heal module
         return None
 
 from usage import (APP_DATA, LOOPBACK, ROOT, UUID, Usage, catalog_limit, catalog_selection,
-                   count_tokens, latest_usd_cny, message, model_catalog, model_label, quota_snapshot, quotas_by_model,
+                   count_tokens, latest_usd_cny, message, model_catalog, model_label, nested, quota_snapshot, quotas_by_model,
                    readonly, reference_total, seconds)
 
 
@@ -41,7 +42,8 @@ IPC_DETACH = b"agy-usage:detach"
 WEB = ROOT / "web"
 BAR = (WEB / "composer-status.js").read_text(encoding="utf-8")
 HTML = (WEB / "dashboard.html").read_text(encoding="utf-8").split("<body>", 1)[1].split("</body>", 1)[0]
-ASSETS = json.dumps({"html": HTML, "css": (WEB / "dashboard.css").read_text(encoding="utf-8")})
+ASSETS = json.dumps({"html": HTML, "css": (WEB / "dashboard.css").read_text(encoding="utf-8"),
+                     "theme": (WEB / "theme.css").read_text(encoding="utf-8")})
 VIEW = (WEB / "dashboard.js").read_text(encoding="utf-8")
 INSTALL = (
     BAR
@@ -99,13 +101,9 @@ def renderer_code(authority, script):
     return "if(location.origin===" + origin + "){\n" + script + "\n}"
 
 
-def active_context(rows, selected, catalog, window_mode="", *, prices=None, since=None):
+def active_context(rows, selected, catalog, window_mode="", *, prices=None, since=None, turns=(), checkpoint=None):
     recent = rows[-1] if rows else {}
     selection = catalog_selection(catalog, selected)
-    actual_id = recent.get("model", "")
-    actual = catalog.get(actual_id, {})
-    actual_label = actual.get("label") or recent.get("label")
-    actual_selection = (catalog_selection(catalog, recent.get("label", "")) or catalog_selection(catalog, actual_id))
     def row_selection(row):
         return (catalog_selection(catalog, row.get("label", ""))
                 or catalog_selection(catalog, row.get("model", ""))) or {}
@@ -116,52 +114,51 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
             return True
         if selection.keys() & row_selection(row).keys():
             return True
-        if identity == "gemini-flash-worker-agy" and any(key.startswith("gemini-pro-orchestrator") for key in selection):
-            latest_route = next((earlier for earlier in reversed(rows[:index]) if earlier.get("model") != identity), {})
-            return latest_route.get("model") in selection
-        if not prices or since is None:
+        if not prices or not (turns or since is not None):
             return False
         routes = current_at(prices.routes, row["day"]) or {}
         selected_routes = {tuple(routes[title_key(entry["label"])]) for entry in selection.values()
                            if title_key(entry["label"]) in routes}
         if len(selected_routes) != 1:
             return False
-        try:
-            if datetime.fromisoformat(row["time"]).timestamp() < since:
-                return False
-        except ValueError:
+        turn_index = bisect_right(turns, row["step"]) if turns else 0
+        if turns and not turn_index:
+            return False
+        if not turns and datetime.fromisoformat(row["time"]).timestamp() < since:
             return False
         planner, executor = next(iter(selected_routes))
         executed = prices.model(row) or identity
         if executed == planner:
             return True
-        if executed != executor:
+        if executed != executor and identity != "gemini-flash-worker-agy":
             return False
         # A direct worker call belongs to the route only after the
         # selected planner has appeared in the same user turn.
-        for earlier in reversed(rows[:index]):
-            if datetime.fromisoformat(earlier["time"]).timestamp() < since:
+        for previous in range(index - 1, -1, -1):
+            earlier = rows[previous]
+            if (earlier["step"] < turns[turn_index - 1] if turns
+                    else datetime.fromisoformat(earlier["time"]).timestamp() < since):
                 break
             if earlier.get("model") in selection or (prices.model(earlier) or earlier.get("model")) == planner:
                 return True
         return False
 
-    correlated = bool(recent and correlates(recent, len(rows) - 1))
-    # A compaction checkpoint (step type 23) and a just-started call both land as
-    # the newest row without a context reading. Report the latest correlated call
-    # that did report one instead of blanking the pill until the next call ends.
     source = None
-    # A compaction checkpoint only ever sits next to the call it replaced, so a
-    # bounded look-back keeps the per-second refresh cheap on long conversations.
-    for index in range(len(rows) - 1, max(-1, len(rows) - 121), -1):
-        row = rows[index]
-        if row.get("context") is not None and correlates(row, index):
-            source = row
-            break
+    if selected:
+        for index in range(len(rows) - 1, -1, -1):
+            row = rows[index]
+            if row.get("context") is not None:
+                if correlates(row, index):
+                    source = row
+                # An observed call from a different model supersedes older data.
+                break
     used = source.get("context") if source else None
     configured = catalog_limit(selection)
     call_limit = source.get("limit") if source else None
-    context_limit = (call_limit or catalog_limit(actual_selection) or configured) if used is not None else configured
+    context_limit = (call_limit or (catalog_limit(row_selection(source)) if source else None) or configured)
+    after_checkpoint = bool(source and checkpoint is not None and checkpoint > source["step"])
+    stale = bool(source and (source is not recent or after_checkpoint
+                             or turns and turns[-1] > source["step"]))
     # A stored call limit can lag behind a later, wider call for the same
     # model, so never report more than a full window.
     clamped = bool(used is not None and context_limit and used > context_limit)
@@ -171,20 +168,45 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
         "context": round(100 * used / context_limit, 1) if used is not None and context_limit else None,
         "used": used, "model_limit": configured, "context_limit": context_limit, "clamped": clamped,
         "call_limit": call_limit,
-        "call_model": (source.get("label") or actual_label) if source else None, "window_mode": window_mode,
+        "call_model": source.get("label") if source else None, "window_mode": window_mode,
         "waiting_for_call": bool(selected and used is None),
-        "stale": bool(source is not None and source is not recent),
+        "stale": stale, "before_compaction": after_checkpoint,
         "breakdown": source.get("breakdown", []) if source else [],
     }
+
+
+def native_task_checklist(db, turn):
+    # The inline checklist is written by update_steps. Arguments from planner
+    # steps and unfinished tool calls have not been applied to the host plan.
+    for (raw,) in db.execute(
+        "SELECT metadata FROM steps WHERE idx>? AND step_type=132 AND status=3 "
+        "AND coalesce(length(error_details), 0)=0 AND instr(metadata, ?) > 0 ORDER BY idx DESC",
+        (turn, b"update_steps"),
+    ):
+        try:
+            call = nested(message(raw, (4,)), 4, (2, 3))
+            if call.get(2) != b"update_steps" or not isinstance(call.get(3), bytes):
+                continue
+            payload = json.loads(call[3])
+        except ValueError:
+            continue
+        steps = payload.get("steps") if isinstance(payload, dict) else None
+        if not isinstance(steps, list):
+            continue
+        states = [step.get("status") if isinstance(step, dict) else None for step in steps]
+        if any(state not in ("pending", "in_progress", "done") for state in states):
+            continue
+        return {"source": "native", "done": states.count("done"), "total": len(states),
+                "in_progress": states.count("in_progress")}
+    return {}
 
 
 def step_statistics(path):
     with readonly(path) as db:
         db.execute("BEGIN")
-        last_input = db.execute(
-            "SELECT metadata FROM steps WHERE step_type=14 ORDER BY idx DESC LIMIT 1"
-        ).fetchone()
-        raw_input = last_input[0] if last_input else None
+        inputs = db.execute("SELECT idx,metadata FROM steps WHERE step_type=14 ORDER BY idx").fetchall()
+        raw_input = inputs[-1][1] if inputs else None
+        checkpoint = db.execute("SELECT max(idx) FROM steps WHERE step_type=23").fetchone()[0]
         turns, steps, tool_time, compactions = 0, 0, 0, 0
         for kind, raw in db.execute("SELECT step_type,metadata FROM steps WHERE status=3"):
             steps += 1
@@ -197,7 +219,9 @@ def step_statistics(path):
                 if started and ended and ended >= started:
                     tool_time += ended - started
         return {"turns": turns, "steps": steps, "tool_seconds": tool_time, "compactions": compactions,
-                "_since": seconds(message(raw_input, (1,)), 1)}
+                "_since": seconds(message(raw_input, (1,)), 1),
+                "_turns": tuple(idx for idx, _ in inputs), "_checkpoint": checkpoint,
+                "_checklist": native_task_checklist(db, inputs[-1][0]) if inputs else {}}
 
 
 CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[([ xX/])\]\s+\S")
@@ -264,9 +288,9 @@ def task_progress(app_data, conversation, stats, recent=None, prices=None):
     except (OSError, sqlite3.Error):
         pass
     since = stats.get("_since")
-    checklist = task_checklist(app_data / "brain" / conversation, since)
+    checklist = stats.get("_checklist") or task_checklist(app_data / "brain" / conversation, since)
     phase = ""
-    if checklist and recent and prices:
+    if checklist.get("total") and since is not None and recent and prices:
         try:
             if datetime.fromisoformat(recent["time"]).timestamp() >= since:
                 phase = prices.route_phase(recent)
@@ -281,7 +305,7 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
         return {"reference_usd": 0, "compactions": 0, **active_context([], selected, catalog, window_mode)}
     path = usage.app_data / "conversations" / (conversation + ".db")
     try:
-        rows = usage.read_conversation(path)
+        rows = usage.read_conversation(path, context=True)
     except FileNotFoundError:
         rows = []
     except (OSError, ValueError, sqlite3.Error, OverflowError):
@@ -304,9 +328,12 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
             stats = cached_stats[path][1]
     progress = task_progress(usage.app_data, conversation, stats, rows[-1] if rows else None, prices)
     display_stats = {key: value for key, value in stats.items() if not key.startswith("_")}
+    context_metrics = active_context(usage.contexts.get(path, ()), selected, catalog, window_mode,
+                                     prices=prices, since=stats.get("_since"), turns=stats.get("_turns", ()),
+                                     checkpoint=stats.get("_checkpoint"))
     if not rows:
         return {"total": 0, "reference_usd": 0, "compactions": usage.compactions.get(path.stem, 0),
-                **display_stats, "task_progress": progress, **active_context(rows, selected, catalog, window_mode)}
+                **display_stats, "task_progress": progress, **context_metrics}
     recent = rows[-1]
     total = sum(map(count_tokens, rows))
     input_tokens = total - sum(row["output"] for row in rows)
@@ -324,7 +351,7 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
         "output": sum(row["output"] for row in rows),
         "hit": round(100 * sum(row["cached"] for row in rows) / input_tokens, 1) if input_tokens else None,
         "speed": round(recent["output"] / recent["seconds"], 1) if recent["seconds"] else None,
-        **active_context(rows, selected, catalog, window_mode, prices=prices, since=stats.get("_since")),
+        **context_metrics,
     }
 
 
@@ -460,7 +487,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 51 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 54 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
@@ -484,7 +511,7 @@ def poll(guard):
                         cache_key = (port, item["id"], item["model"], item["windowMode"])
                         expires, metrics = cached_sessions.get(cache_key, (0, {}))
                         if time.monotonic() >= expires:
-                            metrics = session_metrics(usage, item["id"], item["model"], catalog, item["windowMode"])
+                            metrics = session_metrics(usage, item["id"], item["model"], catalog, item["windowMode"]) or metrics
                             cached_sessions[cache_key] = (time.monotonic() + 2, metrics)
                         sessions.append({**item, "usage": metrics})
                     pending = probe.get("request")

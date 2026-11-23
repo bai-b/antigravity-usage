@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 51) return;
+  if (window[key]?.version === 54) return;
   window[key]?.remove();
-  const state = window[key] = { version: 51, request: null };
+  const state = window[key] = { version: 54, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -76,10 +76,8 @@
     .agy-composer-footer:has(> [data-agy-usage-slot]) > :last-child {grid-area:actions}
     .agy-composer-footer > [data-agy-usage-slot] {grid-area:usage;align-self:center}
     .agy-composer-footer:has(> [data-agy-usage-slot][data-layout="summary"]) {grid-template-columns:minmax(0,1fr) max-content max-content}
-    [data-agy-usage-status] {display:flex;align-items:center;justify-content:center;gap:1px 7px;min-block-size:22px;white-space:nowrap;overflow:clip}
-    [data-agy-usage-status] button {font:inherit;color:inherit;text-align:start;border:0;background:none;padding:2px 4px;border-radius:5px;cursor:pointer}
-    [data-agy-usage-status] button:hover,[data-agy-usage-status] button:focus-visible {background:var(--secondary,#8882)}
-    [data-agy-usage-status] button:focus-visible {outline:1px solid var(--foreground,#888);outline-offset:-1px}
+    [data-agy-usage-status] {display:flex;align-items:center;justify-content:center;gap:1px 7px;min-block-size:22px;white-space:nowrap;overflow:clip;color:var(--agy-usage-dim);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}
+    [data-agy-usage-status] button {font:inherit;color:inherit;text-align:start;border:0;background:none;padding:2px 4px;border-radius:var(--agy-usage-radius-sm);cursor:pointer}
     [data-agy-usage-status] .agy-usage-pill {display:inline-flex;align-items:center;gap:4px;flex:none;min-inline-size:0}
     [data-agy-usage-status] .agy-usage-icon {display:grid;place-items:center;flex:none}
     [data-agy-usage-status] .agy-usage-reading {min-inline-size:0}
@@ -91,34 +89,33 @@
     [data-agy-usage-status][data-measuring] .agy-usage-pill {display:inline-flex}
     [data-agy-usage-status][data-measuring] .agy-usage-reading {display:inline}
     .agy-composer-footer:has(> [data-agy-usage-slot]) [data-testid="model-selector-trigger"] > span:not([aria-hidden="true"],[data-icon],.google-symbols) {white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    [data-agy-usage-launcher] {display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--foreground,CanvasText);cursor:pointer;font-size:12px;white-space:nowrap;-webkit-app-region:no-drag}
-    [data-agy-usage-launcher]:hover,[data-agy-usage-launcher]:focus-visible {background:var(--secondary,#8882)}
-    [data-agy-usage-launcher]:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
-    .agy-usage-header-pill {flex:none;white-space:nowrap;border:0;border-radius:6px;background:none;cursor:pointer;padding:0 6px;height:28px;color:var(--muted-foreground,#71717a);font:inherit;font-size:11px;-webkit-app-region:no-drag}
-    .agy-usage-header-pill:hover,.agy-usage-header-pill:focus-visible {background:var(--secondary,#8882)}
-    .agy-usage-header-pill:focus-visible {outline:1px solid var(--foreground,CanvasText);outline-offset:-1px}
-    .agy-usage-header-pill.agy-usage-task {display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border-radius:999px;background:var(--secondary,#8882);color:var(--muted-foreground,#71717a);font-weight:600;font-variant-numeric:tabular-nums}
-    .agy-usage-task[data-measured] {--agy-task-ink:light-dark(#275dbe,#afcaff);color:var(--agy-task-ink);background:color-mix(in oklab,var(--agy-task-ink) 9%,transparent)}
-    .agy-usage-task[data-complete] {--agy-task-ink:light-dark(#157451,#81d5ae)}
-    .agy-usage-task[data-measured]:hover,.agy-usage-task[data-measured]:focus-visible {background:color-mix(in oklab,var(--agy-task-ink) 17%,transparent)}
-    .agy-usage-task .agy-usage-icon {display:inline-block;width:12px;height:12px;flex:none;border-radius:50%;background:conic-gradient(currentColor var(--agy-task-fraction,0%),var(--border,#8886) 0);mask-image:radial-gradient(transparent 46%,black 51%)}
+    [data-agy-usage-launcher], .agy-usage-header-pill {display:inline-flex;align-items:center;gap:5px;flex:none;height:28px;padding:0 8px;border:0;border-radius:var(--agy-usage-radius-control);background:none;color:var(--agy-usage-dim);cursor:pointer;font:inherit;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;-webkit-app-region:no-drag}
+    [data-agy-usage-launcher] {color:var(--agy-usage-ink);font-size:12px;font-weight:550}
+    :is([data-agy-usage-status] button,[data-agy-usage-launcher],.agy-usage-header-pill):hover {background:var(--agy-usage-hover);color:var(--agy-usage-ink)}
+    :is([data-agy-usage-status] button,[data-agy-usage-launcher],.agy-usage-header-pill):focus-visible {outline:2px solid var(--agy-usage-accent);outline-offset:-2px}
+    .agy-usage-header-pill.agy-usage-task {font-weight:600}
+    .agy-usage-task[data-measured] {--agy-meter:var(--agy-usage-accent);--agy-task-surface:var(--agy-usage-accent-soft);color:var(--agy-meter);background:var(--agy-task-surface)}
+    .agy-usage-task[data-complete] {--agy-meter:var(--agy-usage-good);--agy-task-surface:var(--agy-usage-good-soft)}
+    .agy-usage-task[data-measured]:hover {color:var(--agy-meter);background:color-mix(in oklab,var(--agy-meter) 10%,var(--agy-task-surface))}
+    .agy-usage-ring {display:inline-block;width:12px;height:12px;flex:none;border-radius:50%;background:conic-gradient(var(--agy-meter,var(--agy-usage-accent)) var(--agy-usage-fraction,0%),var(--agy-usage-track) 0);mask-image:radial-gradient(transparent 42%,black 48%)}
+    .agy-usage-ring[data-warning], [data-agy-usage-popup] progress[data-tone="warn"] {--agy-meter:var(--agy-usage-warn)}
+    [data-agy-usage-popup] progress[data-tone="good"] {--agy-meter:var(--agy-usage-good)}
     @media (forced-colors: active) {
-      .agy-usage-task .agy-usage-icon {forced-color-adjust:none;background:conic-gradient(CanvasText var(--agy-task-fraction,0%),GrayText 0)}
+      .agy-usage-ring {forced-color-adjust:none;background:conic-gradient(CanvasText var(--agy-usage-fraction,0%),GrayText 0)}
     }
-    .agy-usage-launcher-icon {height:12px;display:flex;align-items:end;gap:2px;color:var(--muted-foreground,#777)}
+    .agy-usage-launcher-icon {height:12px;display:flex;align-items:end;gap:2px;color:var(--agy-usage-dim)}
     .agy-usage-launcher-icon i {width:2px;border-radius:1px;background:currentColor}
     .agy-usage-launcher-icon i:nth-child(1) {height:5px}
     .agy-usage-launcher-icon i:nth-child(2) {height:8px}
     .agy-usage-launcher-icon i:nth-child(3) {height:11px}
-    [data-agy-usage-popup] {position:fixed;inset:auto;margin:0;padding:14px 16px;width:300px;max-width:calc(100vw - 24px);border:1px solid var(--border,#8884);border-radius:12px;background:var(--background,Canvas);color:var(--foreground,CanvasText);box-shadow:0 8px 28px #0002;font:12px/1.5 Inter,"Microsoft YaHei UI",system-ui,sans-serif;font-variant-numeric:tabular-nums;z-index:100}
-    [data-agy-usage-popup] header {display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid var(--border,#8883);font-weight:500}
+    [data-agy-usage-popup] {position:fixed;inset:auto;margin:0;padding:14px 16px;width:300px;max-width:calc(100vw - 24px);border:1px solid var(--agy-usage-line);border-radius:var(--agy-usage-radius-card);background:var(--agy-usage-panel);color:var(--agy-usage-ink);box-shadow:var(--agy-usage-shadow);font:12px/1.5 var(--agy-usage-font);font-variant-numeric:tabular-nums;z-index:100}
+    [data-agy-usage-popup] header {display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid var(--agy-usage-line);font-weight:600}
     [data-agy-usage-popup] dl {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px 16px;margin:10px 0 0}
-    [data-agy-usage-popup] dt {color:var(--muted-foreground,#888);overflow-wrap:anywhere}
+    [data-agy-usage-popup] dt {color:var(--agy-usage-dim);overflow-wrap:anywhere}
     [data-agy-usage-popup] dd {margin:0;text-align:right;max-width:170px;overflow-wrap:anywhere}
-    [data-agy-usage-popup] progress {display:block;width:100%;height:5px;margin:10px 0;accent-color:light-dark(#3c63b4,#9eb7f3)}
-    [data-agy-usage-popup] small {display:block;color:var(--muted-foreground,#888);margin-top:10px;font:inherit;font-size:11px}
-    [data-agy-usage-popup] .usage-dot {width:7px;height:7px;display:inline-block;border-radius:2px;background:var(--primary,#6489bf);margin-right:7px}
-    [data-agy-usage-preview] {width:292px;padding:12px;box-shadow:0 8px 22px #0002}
+    [data-agy-usage-popup] progress {display:block;width:100%;height:5px;margin:10px 0;accent-color:var(--agy-meter,var(--agy-usage-accent))}
+    [data-agy-usage-popup] small {display:block;color:var(--agy-usage-dim);margin-top:10px;font:inherit;font-size:11px}
+    [data-agy-usage-preview] {width:292px;padding:12px}
     [data-agy-usage-preview] header {padding:0 0 8px;margin:0 0 8px;font-size:13px}
     [data-agy-usage-preview] dl {margin:0;gap:8px 12px;align-items:center}
     [data-agy-usage-preview] dd {display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-weight:500}
@@ -141,8 +138,6 @@
     bar.setAttribute(attr, "");
     bar.setAttribute("role", "group");
     bar.setAttribute("aria-label", "Antigravity 会话用量");
-    style(bar, {fontSize:"11px",lineHeight:"16px",fontVariantNumeric:"tabular-nums",
-      color:"var(--muted-foreground,#71717a)"});
     slot.append(bar);
     const popup = document.createElement("div");
     popup.setAttribute("data-agy-usage-popup","");
@@ -206,6 +201,7 @@
         const meter=document.createElement("progress");meter.max=100;
         meter.value=Math.max(0,Math.min(100,content.progress));
         meter.setAttribute("aria-label",content.progressLabel || "上下文已用");
+        if (content.progressTone) meter.dataset.tone = content.progressTone;
         popup.append(meter);
       }
       popup.append(list);
@@ -232,6 +228,7 @@
       button.setAttribute("aria-expanded","false");
       const icon=document.createElement("span");
       icon.className="agy-usage-icon";
+      if(index===2 || index===4) icon.classList.add("agy-usage-ring");
       icon.setAttribute("aria-hidden","true");
       style(icon,{fontSize:"13px",lineHeight:"14px"});
       if (index < 2) {
@@ -278,11 +275,6 @@
       return {button,text,short,icon,name};
     });
     const ring=pills[2].icon;
-    style(ring,{width:"12px",height:"12px",flexShrink:"0",borderRadius:"50%",position:"relative",
-      background:"var(--border,#8884)"});
-    const hole=document.createElement("span");
-    style(hole,{position:"absolute",inset:"2px",borderRadius:"50%",background:"var(--background,Canvas)"});
-    ring.append(hole);
     popup.addEventListener("pointerenter",()=>clearTimeout(closeTimer));
     popup.addEventListener("pointerleave",closeSoon);
     const escape=e=>{if(e.key==="Escape"&&active){hide();e.stopPropagation();}};
@@ -609,8 +601,9 @@
     request: state.request
   });
 
-  state.install = ({ html, css }) => {
+  state.install = ({ html, css, theme }) => {
     if (state.open) return;
+    styles.prepend(document.createTextNode(theme));
     state.open = (id, opener) => {
       overlay?.close();
       let serial = 0;
@@ -624,12 +617,11 @@
         width: "min(1160px, calc(100vw - 40px))", maxWidth: "none",
         maxHeight: "min(86vh, 900px)", padding: "0", overflow: "auto", margin: "auto",
         position: "fixed", inset: "0", zIndex: "1001",
-        border: "1px solid var(--border, #8884)", borderRadius: "16px",
-        background: "var(--background, Canvas)", color: "var(--foreground, CanvasText)",
+        border: "1px solid var(--agy-usage-line)", borderRadius: "16px",
+        background: "var(--agy-usage-bg)", color: "var(--agy-usage-ink)",
         boxShadow: "0 20px 64px #0003", overscrollBehavior: "contain"
       });
       const host = document.createElement("div");
-      host.style.colorScheme = getComputedStyle(document.documentElement).colorScheme;
       const root = host.attachShadow({mode: "open"});
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(css);
@@ -718,7 +710,7 @@
       const windowLimit = limit ? capacity(limit) : "—";
       const context = usage.used != null
         ? compact.format(usage.used) + "/" + windowLimit
-        : (usage.waiting_for_call && limit ? "≈" + windowLimit : windowLimit);
+        : (usage.waiting_for_call ? (limit ? windowLimit + " · " : "") + "待读数" : windowLimit);
       const contextPercent = usage.context != null ? decimal(usage.context) + "%" : "";
       const period = (window, label) => {
         const bucket = quota?.buckets.find(item => item.window === window);
@@ -760,7 +752,7 @@
         ]}, usage.total == null ? "Token —" : compact.format(usage.total));
       const contextReading = [context, contextPercent].filter(Boolean).join(" · ");
       assign(2,contextReading,{
-        title:"上下文",value:contextPercent || windowLimit,progress:usage.context,
+        title:"上下文",value:contextPercent || windowLimit,progress:usage.context,progressTone:usage.context >= 100 ? "warn" : "",
         rows:[["已用（调用估算）",usage.used == null ? "—" : value(usage.used)+" Token"],
           [usage.used == null ? "所选模型窗口" : "计算采用的窗口",limit ? value(limit)+" Token" : "—"],
           ...(usage.clamped && usage.call_limit ? [["本次调用记录上限",value(usage.call_limit)+" Token"]] : []),
@@ -769,10 +761,11 @@
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
           : (usage.call_model ? "最近一次调用 · "+usage.call_model : "")
-            + (usage.stale ? " · 上一轮调用的读数，本轮结束即刷新" : "")
+            + (usage.before_compaction ? " · 压缩前读数，等待压缩后的调用记录"
+              : usage.stale ? " · 上一条有效读数，下一条记录到达后更新" : "")
             + (usage.clamped ? " · 超出记录上限，按已用量计" : "")
             + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
-      }, contextPercent || context || "—");
+      }, contextPercent || (usage.waiting_for_call ? "待读数" : context));
       const periods=[period("5h","5h"),period("weekly","周")].filter(Boolean);
       stats[3].button.hidden=!periods.length;
       assign(3,periods.map(item=>item[0]).join(" · "),{
@@ -788,14 +781,15 @@
       badge.hidden = !planned;
       badge.toggleAttribute("data-measured", planned);
       badge.toggleAttribute("data-complete", progress === 100);
-      badge.style.setProperty("--agy-task-fraction", planned ? progress + "%" : "0%");
+      badge.style.setProperty("--agy-usage-fraction", planned ? progress + "%" : "0%");
       const phase = {planning:"规划或复核",implementing:"实施"}[task.last_phase];
       assign(4,percent ? "任务 " + percent : taskState,{
-        title:"任务进度",value:percent || taskState,progress,progressLabel:"任务清单进度",
+        title:"任务进度",value:percent || taskState,progress,progressLabel:"任务清单进度",progressTone:progress === 100 ? "good" : "",
         rows:[["会话状态",taskState],
           ...(phase ? [["最近一次模型调用",phase]] : []),
           ...(planned ? [["已完成",value(task.done)+" / "+value(task.total)+" 项"],["进行中",value(task.in_progress)+" 项"]] : [])],
-        note:planned ? "按当前任务清单中已完成的项目统计。" : "当前只读取到运行状态。"
+        note:task.source === "native" ? "按本轮 Antigravity 原生任务清单统计。"
+          : "按本轮计划文件中的任务清单统计。"
       });
       stats[5].button.detail = {
         title:"会话用量",value:"",rows:[
@@ -807,8 +801,8 @@
       bar.usage.layout();
       bar.usage.paint();
       const fraction = Math.max(0, Math.min(100, usage.context || 0));
-      const ink = usage.context >= 100 ? "#d47743" : "light-dark(#3c63b4,#9eb7f3)";
-      bar.usage.ring.style.background = `conic-gradient(${ink} ${fraction}%, var(--border, #8884) 0)`;
+      bar.usage.ring.toggleAttribute("data-warning", usage.context >= 100);
+      bar.usage.ring.style.setProperty("--agy-usage-fraction", fraction + "%");
     });
     updateHeader(sessions, preview);
   };

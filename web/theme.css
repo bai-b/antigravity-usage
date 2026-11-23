@@ -1,0 +1,24 @@
+:root {
+  --agy-usage-bg: light-dark(#f5f6f8, #14161b);
+  --agy-usage-panel: light-dark(#fff, #1b1e25);
+  --agy-usage-hover: light-dark(#edf0f5, #242833);
+  --agy-usage-line: light-dark(#dfe4ed, #353b48);
+  --agy-usage-line-soft: light-dark(#edf0f5, #2a2f3a);
+  --agy-usage-control: light-dark(#7b8698, #6b7890);
+  --agy-usage-track: light-dark(#c7d0df, #515d73);
+  --agy-usage-ink: light-dark(#171e2b, #edf1f8);
+  --agy-usage-dim: light-dark(#525e73, #aeb8ca);
+  --agy-usage-accent: light-dark(#255bbd, #9abaff);
+  --agy-usage-accent-soft: light-dark(#e8efff, #223350);
+  --agy-usage-good: light-dark(#146348, #8fdfb7);
+  --agy-usage-good-soft: light-dark(#e3f3eb, #1d3d34);
+  --agy-usage-warn: light-dark(#8a4c0b, #ffc480);
+  --agy-usage-warn-soft: light-dark(#fbefdb, #3a2d22);
+  --agy-usage-health-normal: light-dark(#298164, #519f7e);
+  --agy-usage-health-error: light-dark(#bd4d62, #de7a8b);
+  --agy-usage-radius-sm: 6px;
+  --agy-usage-radius-control: 8px;
+  --agy-usage-radius-card: 12px;
+  --agy-usage-shadow: 0 8px 24px light-dark(#171e2b24, #0008);
+  --agy-usage-font: "Inter", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}

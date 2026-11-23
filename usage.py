@@ -217,44 +217,50 @@ def call_errors(db, details):
     return errors
 
 
-def conversation_rows(path, *, health=False):
+def conversation_rows(path, *, health=False, context=False):
     with readonly(path) as db:
         db.execute("BEGIN")
         details = generation_details(db)
         rows = []
+        snapshots = []
         compactions = 0
         # 15 = planner response, 23 = checkpoint (context compaction), 3 = completed.
-        for index, step_type, raw in db.execute(
-            "SELECT idx, step_type, metadata FROM steps WHERE step_type IN (15, 23) AND status=3 ORDER BY idx"
+        condition = "(status=3 OR step_type=15)" if context else "status=3"
+        for index, step_type, status, raw in db.execute(
+            f"SELECT idx, step_type, status, metadata FROM steps WHERE step_type IN (15, 23) AND {condition} ORDER BY idx"
         ):
-            compactions += step_type == 23
+            compactions += step_type == 23 and status == 3
             metadata = message(raw, (1, 9))
             usage = nested(metadata, 9, (1, 2, 3, 4, 5, 7))
             when = seconds(metadata, 1)
-            if not usage or not when:
+            if not when:
                 continue
             tag = read_number(usage, 1)
             uncached, output, written, cached = (read_number(usage, i) or 0 for i in (2, 3, 4, 5))
-            if not (uncached + cached + written + output):
-                continue
-            marker, model, label, duration, context, limit, ttft, breakdown = details.get(
+            marker, model, label, duration, used, limit, ttft, breakdown = details.get(
                 index, ({}, "", "", None, None, None, None, []))
             if marker.get(7) and usage.get(7) and marker[7] != usage[7]:
-                model, label, duration, context, limit = "", "", None, None, None
+                model, label, duration, used, limit = "", "", None, None, None
                 ttft, breakdown = None, []
             model = model or MODEL_IDS.get(tag, f"model-{tag}" if tag else "unknown")
             moment = datetime.fromtimestamp(when, TZ)
-            rows.append({
+            identity = {
                 "time": moment.isoformat(timespec="milliseconds"),
                 "day": moment.date().isoformat(), "step": index, "model": model, "label": label or model,
+            }
+            if context and step_type == 15 and (status == 3 or used is not None):
+                snapshots.append({**identity, "context": used, "limit": limit, "breakdown": breakdown})
+            if status != 3 or not (uncached + cached + written + output):
+                continue
+            rows.append({
+                **identity,
                 "uncached": uncached, "cached": cached, "written": written, "output": output,
-                "seconds": duration if duration and duration > 0 else None, "context": context,
+                "seconds": duration if duration and duration > 0 else None, "context": used,
                 "limit": limit, "ttft": ttft, "breakdown": breakdown, "_message": usage.get(7),
                 "_model_tag": tag,
             })
-        if health:
-            return rows, compactions, call_errors(db, details)
-    return rows, compactions
+        result = (rows, compactions, call_errors(db, details)) if health else (rows, compactions)
+        return (*result, snapshots) if context else result
 
 
 def reference_cost(row, book=DEFAULT_BOOK):
@@ -480,12 +486,13 @@ class Usage:
         self.cached = {}
         self.compactions = {}
         self.errors = {}
+        self.contexts = {}
         self.fx_range = None
         self.fx_rates = {}
         self.fx_checked = 0
         self.fx_fallback = False
 
-    def read_conversation(self, path):
+    def read_conversation(self, path, *, context=False):
         stat = path.stat()
         wal = path.with_suffix(".db-wal")
         try:
@@ -494,11 +501,15 @@ class Usage:
             wal_stat = None
         version = (stat.st_mtime_ns, stat.st_size, wal_stat.st_mtime_ns if wal_stat else 0,
                    wal_stat.st_size if wal_stat else 0)
-        if path not in self.cached or version != self.cached[path][0]:
-            rows, compactions, errors = conversation_rows(path, health=True)
+        if (path not in self.cached or version != self.cached[path][0] or context and path not in self.contexts):
+            rows, compactions, errors, *snapshots = conversation_rows(path, health=True, context=context)
             self.cached[path] = (version, rows)
             self.compactions[path.stem] = compactions
             self.errors[path] = errors
+            if context:
+                self.contexts[path] = snapshots[0]
+            else:
+                self.contexts.pop(path, None)
         return self.cached[path][1]
 
     def scan(self, *, health=False):
