@@ -1,11 +1,12 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 55) return;
+  if (window[key]?.version === 56) return;
   window[key]?.remove();
-  const state = window[key] = { version: 55, request: null };
+  const state = window[key] = { version: 56, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
+  const viewedCompletions = new Map();
   const selector = '[data-testid="agent-input-box"]';
   const attr = "data-agy-usage-status";
   const launcherAttr = "data-agy-usage-launcher";
@@ -123,8 +124,11 @@
     .agy-usage-running-control {display:inline-flex;flex:none}
     .agy-usage-running-control[hidden] {display:none}
     .agy-usage-header-pill.agy-usage-running[data-active] {background:var(--agy-usage-accent-soft);color:var(--agy-usage-accent);font-weight:600}
+    .agy-usage-header-pill.agy-usage-running[data-active][data-completed] {background:var(--agy-usage-good-soft);color:var(--agy-usage-good)}
     [data-agy-usage-running-list] {width:320px;padding:10px;max-height:min(420px,calc(100vh - 24px));overflow:auto;overscroll-behavior:contain}
     [data-agy-usage-running-list] header {padding:2px 6px 8px;margin-bottom:4px}
+    [data-agy-usage-running-list] section:not([hidden]) + section:not([hidden]) {border-block-start:1px solid var(--agy-usage-line);margin-block-start:6px;padding-block-start:6px}
+    [data-agy-usage-running-list] h3 {margin:0;padding:4px 6px;color:var(--agy-usage-dim);font:inherit;font-weight:600}
     [data-agy-usage-running-list] ul {list-style:none;margin:0;padding:0}
     [data-agy-usage-running-list] a {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:5px 6px;border-radius:var(--agy-usage-radius-sm);text-decoration:none;color:inherit}
     [data-agy-usage-running-list] a:hover {background:var(--agy-usage-hover)}
@@ -458,7 +462,7 @@
     popup.style.top = Math.max(10, Math.min(bounds.bottom + 8, innerHeight - popup.offsetHeight - 12)) + "px";
   }
 
-  function makeRunningList() {
+  function makeActivityList() {
     const control = document.createElement("span");
     control.className = "agy-usage-running-control";
     control.hidden = true;
@@ -470,15 +474,21 @@
     popup.setAttribute("data-agy-usage-popup", "");
     popup.setAttribute("data-agy-usage-running-list", "");
     popup.setAttribute("popover", "manual");
-    popup.setAttribute("aria-label", "运行中的会话");
     trigger.setAttribute("aria-controls", popup.id);
     trigger.setAttribute("aria-expanded", "false");
     const title = document.createElement("header");
-    title.textContent = "运行中的会话";
-    const list = document.createElement("ul");
+    title.id = popup.id + "-title";
+    popup.setAttribute("aria-labelledby", title.id);
+    const groups = ["运行中", "已完成 · 未查看"].map(label => {
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      const list = document.createElement("ul");
+      section.append(heading, list);
+      return {section, heading, list, label};
+    });
     const empty = document.createElement("p");
-    empty.textContent = "当前没有运行中的会话";
-    popup.append(title, list, empty);
+    empty.textContent = "没有待查看的已完成会话";
+    popup.append(title, ...groups.map(group => group.section), empty);
     control.append(trigger, popup);
     const events = new AbortController();
     const listen = {signal: events.signal};
@@ -544,41 +554,53 @@
       }
     });
 
-    control.update = (running, current) => {
-      control.hidden = !Array.isArray(running);
+    control.update = (activity, current) => {
+      control.hidden = !activity;
       if (control.hidden) {
         close();
         return;
       }
-      const key = JSON.stringify([running, current]);
+      const {running, completed} = activity;
+      const key = JSON.stringify([running, completed, current]);
       if (key === previous) return;
       previous = key;
-      trigger.textContent = "运行中 " + value(running.length);
-      trigger.setAttribute("aria-label", value(running.length) + " 个会话正在运行");
-      trigger.toggleAttribute("data-active", running.length > 0);
-      empty.hidden = running.length > 0;
-      list.hidden = !running.length;
+      const hasRunning = running.length > 0;
+      const hasCompleted = completed.length > 0;
+      const mixed = hasRunning && hasCompleted;
+      trigger.textContent = hasRunning ? "运行中 " + value(running.length) : "已完成 " + value(completed.length);
+      if (hasRunning) trigger.removeAttribute("aria-description");
+      else trigger.setAttribute("aria-description", "仅统计未查看的会话");
+      trigger.toggleAttribute("data-active", hasRunning || hasCompleted);
+      trigger.toggleAttribute("data-completed", !hasRunning);
+      title.textContent = mixed ? "会话状态" : hasRunning ? "运行中的会话" : "已完成 · 未查看";
+      empty.hidden = hasRunning || hasCompleted;
       const focusedId = popup.contains(document.activeElement) && document.activeElement.dataset.conversation;
       let focusedLink;
-      list.replaceChildren(...running.map(({id, title, background}) => {
-        const row = document.createElement("li");
-        const link = document.createElement("a");
-        link.href = "/c/" + id;
-        link.dataset.conversation = id;
-        if (id === current) link.setAttribute("aria-current", "page");
-        const name = document.createElement("span");
-        name.textContent = title;
-        name.title = title;
-        link.append(name);
-        if (background) {
-          const status = document.createElement("span");
-          status.textContent = "后台任务";
-          link.append(status);
-        }
-        if (id === focusedId) focusedLink = link;
-        row.append(link);
-        return row;
-      }));
+      [running, completed].forEach((items, index) => {
+        const {section, heading, list, label} = groups[index];
+        section.hidden = !items.length;
+        heading.hidden = !mixed;
+        heading.textContent = label + " " + value(items.length);
+        list.replaceChildren(...items.map(({id, title, background}) => {
+          const row = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = "/c/" + id;
+          link.dataset.conversation = id;
+          if (id === current) link.setAttribute("aria-current", "page");
+          const name = document.createElement("span");
+          name.textContent = title;
+          name.title = title;
+          link.append(name);
+          if (background) {
+            const status = document.createElement("span");
+            status.textContent = "后台任务";
+            link.append(status);
+          }
+          if (id === focusedId) focusedLink = link;
+          row.append(link);
+          return row;
+        }));
+      });
       if (focusedId && opened()) (focusedLink || trigger).focus({preventScroll: true});
       if (opened()) positionBelow(trigger, popup);
     };
@@ -677,7 +699,7 @@
     history.destroy = () => {
       close();
       preview.remove();
-      history.runningList?.destroy();
+      history.activityList?.destroy();
       (history.headerPills || []).forEach(button => {
         if (button.parentElement === history.parentElement) button.remove();
       });
@@ -700,14 +722,32 @@
       let button = launchers.get(toolbar);
       if (!button) {
         button = makeLauncher(toolbar);
-        button.runningList = makeRunningList();
+        button.activityList = makeActivityList();
         launchers.set(toolbar, button);
       }
       if (button.parentElement !== anchor) anchor.insertBefore(button, more || anchor.firstChild);
     }
   }
 
-  function updateHeader(sessions, preview, running) {
+  function unreadCompletions(completed) {
+    const currentRevisions = new Map(completed.map(({id, revision}) => [id, revision]));
+    for (const [id, revision] of viewedCompletions) {
+      if (currentRevisions.get(id) !== revision) viewedCompletions.delete(id);
+    }
+    // The host also treats a conversation as viewed while its window has focus.
+    if (completed.length && document.visibilityState === "visible" && document.hasFocus()) {
+      for (const view of document.querySelectorAll('[data-testid="conversation-view"][data-cascade-id]')) {
+        const id = view.dataset.cascadeId;
+        if (currentRevisions.has(id) && view.getClientRects().length && getComputedStyle(view).visibility === "visible") {
+          viewedCompletions.set(id, currentRevisions.get(id));
+        }
+      }
+    }
+    return completed.filter(({id, revision}) => viewedCompletions.get(id) !== revision);
+  }
+
+  function updateHeader(sessions, preview, activity) {
+    const readingActivity = activity && {...activity, completed: unreadCompletions(activity.completed)};
     const usedInputs = new Set();
     for (const [toolbar, launcher] of launchers) {
       const id=conversationFor(toolbar);
@@ -724,8 +764,8 @@
         launcher.before(...buttons);
       }
       const first = buttons[0] || launcher;
-      if (launcher.runningList.nextElementSibling !== first) first.before(launcher.runningList);
-      launcher.runningList.update(running, id);
+      if (launcher.activityList.nextElementSibling !== first) first.before(launcher.activityList);
+      launcher.activityList.update(readingActivity, id);
     }
   }
 
@@ -832,7 +872,7 @@
     };
   };
 
-  state.render = ({ sessions, quotas, completed, preview = {}, running = null }) => {
+  state.render = ({ sessions, quotas, completed, preview = {}, activity = null }) => {
     if (completed) state.finish?.(completed);
     placeLaunchers();
     const visible = inputs();
@@ -954,7 +994,7 @@
       bar.usage.ring.toggleAttribute("data-warning", usage.context >= 100);
       bar.usage.ring.style.setProperty("--agy-usage-fraction", fraction + "%");
     });
-    updateHeader(sessions, preview, running);
+    updateHeader(sessions, preview, activity);
   };
   state.remove = () => {
     state.dismiss?.();
