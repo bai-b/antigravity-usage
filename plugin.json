@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agy-usage",
   "displayName": "Antigravity 用量看板",
-  "version": "1.1.42",
+  "version": "1.1.43",
   "description": "查看 Antigravity 桌面端的任务进度、模型调用健康、会话 Token、模型额度和历史 API 参考费用。",
   "suggestedPrompts": ["/usage-dashboard"]
 }

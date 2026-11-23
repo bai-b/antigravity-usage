@@ -299,6 +299,19 @@ def task_progress(app_data, conversation, stats, recent=None, prices=None):
     return {"state": status, "background": bool(background) and status == "idle", "last_phase": phase, **checklist}
 
 
+def running_conversations(app_data):
+    with readonly(app_data / "conversation_summaries.db") as db:
+        rows = db.execute(
+            "SELECT conversation_id, title, status FROM conversation_summaries "
+            "WHERE nesting_depth=0 AND parent_conversation_id='' AND killed=0 "
+            "AND (status='CASCADE_RUN_STATUS_RUNNING' "
+            "OR (status='CASCADE_RUN_STATUS_IDLE' AND not_fully_idle=1)) "
+            "ORDER BY last_modified_time DESC, conversation_id"
+        ).fetchall()
+    return [{"id": cid, "title": title.strip() or "未命名会话", "background": status == "CASCADE_RUN_STATUS_IDLE"}
+            for cid, title, status in rows if UUID.fullmatch(cid or "")]
+
+
 def session_metrics(usage, conversation, selected="", catalog=None, window_mode=""):
     catalog = catalog or {}
     if not UUID.fullmatch(conversation):
@@ -409,6 +422,7 @@ def poll(guard):
     rate_due, week_due = 0, 0
     prices_job, prices_due = None, 0
     latest_rate, week_usd = None, None
+    running, running_due = None, 0
     had_windows, last_rate_request = False, time.monotonic()
     cached_sessions = {}
     warmed = False
@@ -477,6 +491,12 @@ def poll(guard):
                 attached = False
                 guard.settimeout(1)
                 continue
+            if now >= running_due:
+                running_due = now + 2
+                try:
+                    running = running_conversations(usage.app_data)
+                except (OSError, sqlite3.Error):
+                    pass
             guard.settimeout(0.05)
             attached = False
             for key, (url, authority) in targets.items():
@@ -487,7 +507,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 54 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 55 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
@@ -530,6 +550,7 @@ def poll(guard):
                         completed = {"epoch": request[0], "id": request[1], **request[2].result()}
                         requests.pop(key)
                     payload = json.dumps({"sessions": sessions, "quotas": quotas, "completed": completed,
+                                          "running": running,
                                           "preview": {"week_usd": week_usd, "rate": latest_rate}})
                     evaluate(ws, renderer_code(authority, f"window.__agyUsageStatus.render({payload});"))
                     attached = True

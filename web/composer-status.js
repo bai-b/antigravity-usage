@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 54) return;
+  if (window[key]?.version === 55) return;
   window[key]?.remove();
-  const state = window[key] = { version: 54, request: null };
+  const state = window[key] = { version: 55, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -120,6 +120,20 @@
     [data-agy-usage-preview] dl {margin:0;gap:8px 12px;align-items:center}
     [data-agy-usage-preview] dd {display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-weight:500}
     [data-agy-usage-preview] dd span {white-space:nowrap}
+    .agy-usage-running-control {display:inline-flex;flex:none}
+    .agy-usage-running-control[hidden] {display:none}
+    .agy-usage-header-pill.agy-usage-running[data-active] {background:var(--agy-usage-accent-soft);color:var(--agy-usage-accent);font-weight:600}
+    [data-agy-usage-running-list] {width:320px;padding:10px;max-height:min(420px,calc(100vh - 24px));overflow:auto;overscroll-behavior:contain}
+    [data-agy-usage-running-list] header {padding:2px 6px 8px;margin-bottom:4px}
+    [data-agy-usage-running-list] ul {list-style:none;margin:0;padding:0}
+    [data-agy-usage-running-list] a {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:5px 6px;border-radius:var(--agy-usage-radius-sm);text-decoration:none;color:inherit}
+    [data-agy-usage-running-list] a:hover {background:var(--agy-usage-hover)}
+    [data-agy-usage-running-list] a:focus-visible {outline:2px solid var(--agy-usage-accent);outline-offset:-2px}
+    [data-agy-usage-running-list] a[aria-current="page"] {color:var(--agy-usage-accent);background:var(--agy-usage-accent-soft)}
+    [data-agy-usage-running-list] a span:first-child {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    [data-agy-usage-running-list] a span:nth-child(2), [data-agy-usage-running-list] p {color:var(--agy-usage-dim);font-size:11px}
+    [data-agy-usage-running-list] a span:nth-child(2) {white-space:nowrap}
+    [data-agy-usage-running-list] p {margin:0;padding:5px 6px}
   `;
   // 旧版注入留下的同款基础样式一并清掉，重复注入不再累积。
   for (const stale of document.querySelectorAll("style")) {
@@ -438,6 +452,140 @@
     return "";
   }
 
+  function positionBelow(anchor, popup) {
+    const bounds = anchor.getBoundingClientRect();
+    popup.style.left = Math.max(12, Math.min(bounds.right - popup.offsetWidth, innerWidth - popup.offsetWidth - 12)) + "px";
+    popup.style.top = Math.max(10, Math.min(bounds.bottom + 8, innerHeight - popup.offsetHeight - 12)) + "px";
+  }
+
+  function makeRunningList() {
+    const control = document.createElement("span");
+    control.className = "agy-usage-running-control";
+    control.hidden = true;
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "agy-usage-header-pill agy-usage-running";
+    const popup = document.createElement("nav");
+    popup.id = "agy-usage-running-" + crypto.randomUUID();
+    popup.setAttribute("data-agy-usage-popup", "");
+    popup.setAttribute("data-agy-usage-running-list", "");
+    popup.setAttribute("popover", "manual");
+    popup.setAttribute("aria-label", "运行中的会话");
+    trigger.setAttribute("aria-controls", popup.id);
+    trigger.setAttribute("aria-expanded", "false");
+    const title = document.createElement("header");
+    title.textContent = "运行中的会话";
+    const list = document.createElement("ul");
+    const empty = document.createElement("p");
+    empty.textContent = "当前没有运行中的会话";
+    popup.append(title, list, empty);
+    control.append(trigger, popup);
+    const events = new AbortController();
+    const listen = {signal: events.signal};
+    let timer;
+    let previous = "";
+    const opened = () => popup.matches(":popover-open");
+    const pinned = () => overlay?.owner === trigger && overlay.fixed;
+
+    function close() {
+      clearTimeout(timer);
+      if (opened()) popup.hidePopover();
+      trigger.setAttribute("aria-expanded", "false");
+      releaseOverlay(trigger);
+    }
+    function open(fixed = false) {
+      clearTimeout(timer);
+      if (!control.isConnected || control.hidden || !claimOverlay(trigger, close, fixed)) return;
+      if (!opened()) popup.showPopover();
+      trigger.setAttribute("aria-expanded", "true");
+      positionBelow(trigger, popup);
+    }
+    function closeSoon() {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!control.matches(":hover, :focus-within")) close();
+      }, 230);
+    }
+    trigger.addEventListener("pointerenter", event => {
+      if (event.pointerType === "touch") return;
+      clearTimeout(timer);
+      if (!opened()) timer = setTimeout(open, 180);
+    });
+    trigger.addEventListener("focus", () => {
+      if (!opened() && trigger.matches(":focus-visible")) open();
+    });
+    trigger.addEventListener("click", () => { if (pinned()) close(); else open(true); });
+    control.addEventListener("pointerleave", closeSoon);
+    popup.addEventListener("pointerenter", () => clearTimeout(timer));
+    control.addEventListener("focusout", closeSoon);
+    document.addEventListener("pointerdown", event => {
+      if (!control.contains(event.target)) close();
+    }, {...listen, capture: true});
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || !opened()) return;
+      if (popup.contains(document.activeElement)) trigger.focus();
+      close();
+      event.preventDefault();
+      event.stopPropagation();
+    }, {...listen, capture: true});
+    window.addEventListener("resize", () => { if (opened()) positionBelow(trigger, popup); }, listen);
+    popup.addEventListener("click", event => {
+      const link = event.target.closest("a[data-conversation]");
+      if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      const native = document.querySelector('[data-testid="conversation-row-sidebar"] a[href="' + link.getAttribute("href") + '"]');
+      const router = window.__TSR_ROUTER__;
+      close();
+      if (native) {
+        event.preventDefault();
+        native.click();
+      } else if (typeof router?.navigate === "function" && router.routesByPath?.["/c/$cascadeId"]) {
+        event.preventDefault();
+        router.navigate({to:"/c/$cascadeId",params:{cascadeId:link.dataset.conversation}});
+      }
+    });
+
+    control.update = (running, current) => {
+      control.hidden = !Array.isArray(running);
+      if (control.hidden) {
+        close();
+        return;
+      }
+      const key = JSON.stringify([running, current]);
+      if (key === previous) return;
+      previous = key;
+      trigger.textContent = "运行中 " + value(running.length);
+      trigger.setAttribute("aria-label", value(running.length) + " 个会话正在运行");
+      trigger.toggleAttribute("data-active", running.length > 0);
+      empty.hidden = running.length > 0;
+      list.hidden = !running.length;
+      const focusedId = popup.contains(document.activeElement) && document.activeElement.dataset.conversation;
+      let focusedLink;
+      list.replaceChildren(...running.map(({id, title, background}) => {
+        const row = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = "/c/" + id;
+        link.dataset.conversation = id;
+        if (id === current) link.setAttribute("aria-current", "page");
+        const name = document.createElement("span");
+        name.textContent = title;
+        name.title = title;
+        link.append(name);
+        if (background) {
+          const status = document.createElement("span");
+          status.textContent = "后台任务";
+          link.append(status);
+        }
+        if (id === focusedId) focusedLink = link;
+        row.append(link);
+        return row;
+      }));
+      if (focusedId && opened()) (focusedLink || trigger).focus({preventScroll: true});
+      if (opened()) positionBelow(trigger, popup);
+    };
+    control.destroy = () => { close(); events.abort(); control.remove(); };
+    return control;
+  }
+
   function makeLauncher(toolbar) {
     const history = document.createElement("button");
     history.type = "button";
@@ -478,10 +626,7 @@
       releaseOverlay(history);
     }
     function position() {
-      const bounds = history.getBoundingClientRect();
-      const left = Math.max(12, Math.min(bounds.right - preview.offsetWidth, innerWidth - preview.offsetWidth - 12));
-      preview.style.left = left + "px";
-      preview.style.top = Math.max(10, Math.min(bounds.bottom + 8, innerHeight - preview.offsetHeight - 12)) + "px";
+      positionBelow(history, preview);
     }
     function schedule() {
       clearTimeout(timer);
@@ -532,6 +677,7 @@
     history.destroy = () => {
       close();
       preview.remove();
+      history.runningList?.destroy();
       (history.headerPills || []).forEach(button => {
         if (button.parentElement === history.parentElement) button.remove();
       });
@@ -554,13 +700,14 @@
       let button = launchers.get(toolbar);
       if (!button) {
         button = makeLauncher(toolbar);
+        button.runningList = makeRunningList();
         launchers.set(toolbar, button);
       }
       if (button.parentElement !== anchor) anchor.insertBefore(button, more || anchor.firstChild);
     }
   }
 
-  function updateHeader(sessions, preview) {
+  function updateHeader(sessions, preview, running) {
     const usedInputs = new Set();
     for (const [toolbar, launcher] of launchers) {
       const id=conversationFor(toolbar);
@@ -576,6 +723,9 @@
       if (buttons.some((button, index) => button.nextElementSibling !== (buttons[index + 1] || launcher))) {
         launcher.before(...buttons);
       }
+      const first = buttons[0] || launcher;
+      if (launcher.runningList.nextElementSibling !== first) first.before(launcher.runningList);
+      launcher.runningList.update(running, id);
     }
   }
 
@@ -682,7 +832,7 @@
     };
   };
 
-  state.render = ({ sessions, quotas, completed, preview = {} }) => {
+  state.render = ({ sessions, quotas, completed, preview = {}, running = null }) => {
     if (completed) state.finish?.(completed);
     placeLaunchers();
     const visible = inputs();
@@ -804,7 +954,7 @@
       bar.usage.ring.toggleAttribute("data-warning", usage.context >= 100);
       bar.usage.ring.style.setProperty("--agy-usage-fraction", fraction + "%");
     });
-    updateHeader(sessions, preview);
+    updateHeader(sessions, preview, running);
   };
   state.remove = () => {
     state.dismiss?.();
