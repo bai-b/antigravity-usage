@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 50) return;
+  if (window[key]?.version === 51) return;
   window[key]?.remove();
-  const state = window[key] = { version: 50, request: null };
+  const state = window[key] = { version: 51, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -769,6 +769,7 @@
           ...(usage.breakdown||[]).map(group=>[({"System Prompt":"系统提示词","Tools":"工具定义","Chat Messages":"对话消息"})[group.name]||group.name||"上下文分组","≈"+compact.format(group.tokens)])],
         note:usage.used == null ? (usage.waiting_for_call ? "等待该模型产生上下文记录" : "暂无上下文记录")
           : (usage.call_model ? "最近一次调用 · "+usage.call_model : "")
+            + (usage.stale ? " · 上一轮调用的读数，本轮结束即刷新" : "")
             + (usage.clamped ? " · 超出记录上限，按已用量计" : "")
             + (usage.model_limit ? "" : " · 暂未读取到模型窗口")
       }, contextPercent || context || "—");

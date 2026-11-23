@@ -106,35 +106,61 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
     actual = catalog.get(actual_id, {})
     actual_label = actual.get("label") or recent.get("label")
     actual_selection = (catalog_selection(catalog, recent.get("label", "")) or catalog_selection(catalog, actual_id))
-    correlated = bool(recent and (actual_id in selection
-                      or model_label(recent.get("label", "")) == model_label(selected)
-                      or selection.keys() & actual_selection.keys()))
-    if actual_id == "gemini-flash-worker-agy" and any(key.startswith("gemini-pro-orchestrator") for key in selection):
-        latest_route = next((row for row in reversed(rows) if row["model"] != actual_id), {})
-        correlated = latest_route.get("model") in selection
+    def row_selection(row):
+        return (catalog_selection(catalog, row.get("label", ""))
+                or catalog_selection(catalog, row.get("model", ""))) or {}
 
-    if not correlated and recent and prices and since is not None:
-        routes = current_at(prices.routes, recent["day"]) or {}
+    def correlates(row, index):
+        identity = row.get("model", "")
+        if identity in selection or model_label(row.get("label", "")) == model_label(selected):
+            return True
+        if selection.keys() & row_selection(row).keys():
+            return True
+        if identity == "gemini-flash-worker-agy" and any(key.startswith("gemini-pro-orchestrator") for key in selection):
+            latest_route = next((earlier for earlier in reversed(rows[:index]) if earlier.get("model") != identity), {})
+            return latest_route.get("model") in selection
+        if not prices or since is None:
+            return False
+        routes = current_at(prices.routes, row["day"]) or {}
         selected_routes = {tuple(routes[title_key(entry["label"])]) for entry in selection.values()
                            if title_key(entry["label"]) in routes}
-        if len(selected_routes) == 1 and datetime.fromisoformat(recent["time"]).timestamp() >= since:
-            planner, executor = next(iter(selected_routes))
-            executed = prices.model(recent) or actual_id
-            if executed == planner:
-                correlated = True
-            elif executed == executor:
-                # A direct worker call belongs to the route only after the
-                # selected planner has appeared in the same user turn.
-                for row in reversed(rows[:-1]):
-                    if datetime.fromisoformat(row["time"]).timestamp() < since:
-                        break
-                    if row["model"] in selection or (prices.model(row) or row["model"]) == planner:
-                        correlated = True
-                        break
-    use_recent = bool(selected and correlated)
-    used = recent.get("context") if use_recent else None
+        if len(selected_routes) != 1:
+            return False
+        try:
+            if datetime.fromisoformat(row["time"]).timestamp() < since:
+                return False
+        except ValueError:
+            return False
+        planner, executor = next(iter(selected_routes))
+        executed = prices.model(row) or identity
+        if executed == planner:
+            return True
+        if executed != executor:
+            return False
+        # A direct worker call belongs to the route only after the
+        # selected planner has appeared in the same user turn.
+        for earlier in reversed(rows[:index]):
+            if datetime.fromisoformat(earlier["time"]).timestamp() < since:
+                break
+            if earlier.get("model") in selection or (prices.model(earlier) or earlier.get("model")) == planner:
+                return True
+        return False
+
+    correlated = bool(recent and correlates(recent, len(rows) - 1))
+    # A compaction checkpoint (step type 23) and a just-started call both land as
+    # the newest row without a context reading. Report the latest correlated call
+    # that did report one instead of blanking the pill until the next call ends.
+    source = None
+    # A compaction checkpoint only ever sits next to the call it replaced, so a
+    # bounded look-back keeps the per-second refresh cheap on long conversations.
+    for index in range(len(rows) - 1, max(-1, len(rows) - 121), -1):
+        row = rows[index]
+        if row.get("context") is not None and correlates(row, index):
+            source = row
+            break
+    used = source.get("context") if source else None
     configured = catalog_limit(selection)
-    call_limit = recent.get("limit") if use_recent else None
+    call_limit = source.get("limit") if source else None
     context_limit = (call_limit or catalog_limit(actual_selection) or configured) if used is not None else configured
     # A stored call limit can lag behind a later, wider call for the same
     # model, so never report more than a full window.
@@ -145,9 +171,10 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
         "context": round(100 * used / context_limit, 1) if used is not None and context_limit else None,
         "used": used, "model_limit": configured, "context_limit": context_limit, "clamped": clamped,
         "call_limit": call_limit,
-        "call_model": actual_label if use_recent else None, "window_mode": window_mode,
+        "call_model": (source.get("label") or actual_label) if source else None, "window_mode": window_mode,
         "waiting_for_call": bool(selected and used is None),
-        "breakdown": recent.get("breakdown", []) if use_recent else [],
+        "stale": bool(source is not None and source is not recent),
+        "breakdown": source.get("breakdown", []) if source else [],
     }
 
 
@@ -433,7 +460,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 50 && window.__agyUsageStatus.probe();"))
+                        "window.__agyUsageStatus?.version === 51 && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
