@@ -4,13 +4,16 @@ from bisect import bisect_right
 from collections import defaultdict
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
-from functools import partial
+from functools import lru_cache
+import gzip
 from hashlib import sha256
 import json
 import math
 from pathlib import Path
 import re
 import sqlite3
+from tempfile import NamedTemporaryFile
+from threading import Lock
 import time
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -22,6 +25,7 @@ APP_DATA = Path.home() / ".gemini" / "antigravity"
 TZ = timezone(timedelta(hours=8))
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 FX_CACHE = APP_DATA / "agy_usage_fx.json"
+FX_CACHE_LOCK = Lock()
 FALLBACK_FX = 7.10
 DIRECT = build_opener(ProxyHandler({}))
 MODEL_IDS = {
@@ -102,6 +106,7 @@ def model_text(value):
     return "".join(c for c in value.decode("utf-8", "replace") if c.isprintable())
 
 
+@lru_cache(maxsize=512)
 def model_label(value):
     cleaned = " ".join(re.sub(r"[()]", " ", value).casefold().split())
     return re.sub(r"\s+extra(?: high)?$", " xhigh", cleaned)
@@ -121,6 +126,11 @@ def catalog_selection(catalog, label):
     exact = {key: entry for key, entry in catalog.items() if model_label(entry["label"]) == normalized}
     if exact:
         return exact
+    if normalized.startswith("orchestrator "):
+        planner = normalized.removeprefix("orchestrator ")
+        exact = {key: entry for key, entry in catalog.items() if model_label(entry["label"]) == planner}
+        if exact:
+            return exact
     family = model_family(label)
     return {key: entry for key, entry in catalog.items()
             if family in entry.get("aliases", ()) or model_label(entry.get("group", {}).get("label", "")) == normalized}
@@ -249,7 +259,8 @@ def conversation_rows(path, *, health=False, context=False):
                 "day": moment.date().isoformat(), "step": index, "model": model, "label": label or model,
             }
             if context and step_type == 15 and (status == 3 or used is not None):
-                snapshots.append({**identity, "context": used, "limit": limit, "breakdown": breakdown})
+                snapshots.append({**identity, "context": used, "limit": limit, "breakdown": breakdown,
+                                  "_model_tag": tag or read_number(marker, 1)})
             if status != 3 or not (uncached + cached + written + output):
                 continue
             rows.append({
@@ -264,7 +275,10 @@ def conversation_rows(path, *, health=False, context=False):
 
 
 def reference_cost(row, book=DEFAULT_BOOK):
-    rate = book.rate(row)
+    return cost_at_rate(row, book.rate(row))
+
+
+def cost_at_rate(row, rate):
     if not rate:
         return None
     return (
@@ -273,9 +287,8 @@ def reference_cost(row, book=DEFAULT_BOOK):
     ) / 1_000_000
 
 
-def reference_savings(row, book=DEFAULT_BOOK):
+def savings_at_rate(row, rate):
     """Cached tokens are billed at the read rate instead of the input rate."""
-    rate = book.rate(row)
     if not rate or rate.get("input") is None or rate.get("read") is None or rate["input"] <= rate["read"]:
         return None
     return row["cached"] * (rate["input"] - rate["read"]) / 1_000_000
@@ -294,10 +307,13 @@ def read_fx_cache():
     return data if isinstance(data, dict) else {}
 
 
-def write_fx_cache(data):
+def write_fx_cache(**fields):
     try:
-        FX_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        FX_CACHE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with FX_CACHE_LOCK:
+            data = read_fx_cache()
+            data.update(fields)
+            FX_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            FX_CACHE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
 
@@ -313,9 +329,7 @@ def latest_usd_cny():
         rate = quote["rate"]
         day = date.fromisoformat(quote["date"])
         if (quote["base"], quote["quote"]) == ("USD", "CNY") and type(rate) in (int, float) and 0 < rate < 100:
-            cache = read_fx_cache()
-            cache["latest"] = {"rate": rate, "date": day.isoformat()}
-            write_fx_cache(cache)
+            write_fx_cache(latest={"rate": rate, "date": day.isoformat()})
             return {"rate": rate, "date": day.isoformat()}
     except (OSError, KeyError, ValueError, TypeError):
         pass
@@ -325,17 +339,46 @@ def latest_usd_cny():
     return None
 
 
+def fetch_fx_history(bounds):
+    start, last = bounds
+    request = Request(
+        f"https://api.frankfurter.dev/v1/{start}..{last}?base=USD&symbols=CNY",
+        headers={"User-Agent": "Antigravity-Usage-Dashboard/1.0"},
+    )
+    try:
+        with DIRECT.open(request, timeout=6) as response:
+            rates = json.load(response)["rates"]
+        result = {day: rate["CNY"] for day, rate in rates.items()
+                  if isinstance(rate.get("CNY"), (int, float)) and 0 < rate["CNY"] < 100}
+    except (OSError, URLError, AttributeError, KeyError, ValueError, TypeError):
+        return {}
+    if result:
+        day, rate = max(result.items())
+        write_fx_cache(range=list(bounds), rates=result, latest={"date": day, "rate": rate})
+    return result
+
+
+def cached_fx_history(bounds):
+    cache = read_fx_cache()
+    saved = cache.get("rates")
+    if list(bounds) == cache.get("range") and isinstance(saved, dict) and saved:
+        return {day: rate for day, rate in saved.items() if type(rate) in (int, float) and 0 < rate < 100}
+    latest = cache.get("latest")
+    rate = latest.get("rate") if isinstance(latest, dict) else None
+    return {bounds[0]: rate if type(rate) in (int, float) and 0 < rate < 100 else FALLBACK_FX}
+
+
 def count_tokens(row):
-    return sum(row[key] for key in ("uncached", "cached", "written", "output"))
+    return row["uncached"] + row["cached"] + row["written"] + row["output"]
 
 
-def aggregate(rows, book):
+def aggregate(rows):
     sums = {key: sum(row[key] for row in rows) for key in ("uncached", "cached", "written", "output")}
     total_input = sums["uncached"] + sums["cached"] + sums["written"]
     timed = [row for row in rows if row["seconds"]]
     priced = [row for row in rows if row["usd"] is not None]
     converted = [row for row in priced if row["cny"] is not None]
-    saved = [amount for row in rows if (amount := reference_savings(row, book)) is not None]
+    saved = [amount for row in rows if (amount := row["_savings"]) is not None]
     return {
         **sums, "calls": len(rows), "total": total_input + sums["output"],
         "hit": sums["cached"] / total_input if total_input else None,
@@ -480,17 +523,74 @@ def usage_heatmap(by_model, models, buckets, hourly):
             "granularity": "hour" if hourly else "day"}
 
 
+def encode_history_bytes(value):
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    raise TypeError(f"Unexpected usage cache value: {type(value).__name__}")
+
+
+def decode_history_bytes(value):
+    return bytes.fromhex(value["bytes"]) if value.keys() == {"bytes"} else value
+
+
 class Usage:
-    def __init__(self, app_data=APP_DATA):
+    def __init__(self, app_data=APP_DATA, *, persist_history=False, fx_executor=None):
         self.app_data = app_data
         self.cached = {}
         self.compactions = {}
         self.errors = {}
         self.contexts = {}
+        # Increment the cache filename when the persisted row or fingerprint format changes.
+        self.history_file = app_data / "agy_usage_history_v1.json.gz" if persist_history else None
+        self.history_loaded = False
+        self.history_dirty = False
+        self.history_write_due = 0
         self.fx_range = None
         self.fx_rates = {}
         self.fx_checked = 0
         self.fx_fallback = False
+        self.fx_executor = fx_executor
+        self.fx_job = None
+
+    def load_history(self):
+        self.history_loaded = True
+        try:
+            with gzip.open(self.history_file, "rt", encoding="utf-8") as stream:
+                records = json.load(stream, object_hook=decode_history_bytes)
+            restored = {}
+            for key, (version, rows, compactions, errors) in records.items():
+                if not UUID.fullmatch(key):
+                    continue
+                if type(compactions) is not int or not isinstance(rows, list) or not isinstance(errors, list):
+                    return
+                path = self.app_data / "conversations" / (key + ".db")
+                restored[path] = (tuple(version), rows, compactions, errors)
+            for path, (version, rows, compactions, errors) in restored.items():
+                self.cached[path] = (version, rows)
+                self.compactions[path.stem] = compactions
+                self.errors[path] = errors
+        except (OSError, EOFError, ValueError, TypeError, AttributeError):
+            pass
+
+    def save_history(self):
+        records = {path.stem: (version, rows, self.compactions[path.stem], self.errors[path])
+                   for path, (version, rows) in self.cached.items()}
+        target = None
+        try:
+            payload = json.dumps(records, ensure_ascii=False, separators=(",", ":"), default=encode_history_bytes)
+            with NamedTemporaryFile(dir=self.history_file.parent, prefix=".agy-usage-history-", delete=False) as stream:
+                target = Path(stream.name)
+                stream.write(gzip.compress(payload.encode("utf-8"), compresslevel=1))
+            target.replace(self.history_file)
+            self.history_dirty = False
+        except OSError:
+            pass
+        finally:
+            if target is not None:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def read_conversation(self, path, *, context=False):
         stat = path.stat()
@@ -499,13 +599,14 @@ class Usage:
             wal_stat = wal.stat()
         except FileNotFoundError:
             wal_stat = None
-        version = (stat.st_mtime_ns, stat.st_size, wal_stat.st_mtime_ns if wal_stat else 0,
-                   wal_stat.st_size if wal_stat else 0)
+        version = (stat.st_ino, stat.st_mtime_ns, stat.st_size, wal_stat.st_ino if wal_stat else 0,
+                   wal_stat.st_mtime_ns if wal_stat else 0, wal_stat.st_size if wal_stat else 0)
         if (path not in self.cached or version != self.cached[path][0] or context and path not in self.contexts):
             rows, compactions, errors, *snapshots = conversation_rows(path, health=True, context=context)
             self.cached[path] = (version, rows)
             self.compactions[path.stem] = compactions
             self.errors[path] = errors
+            self.history_dirty = True
             if context:
                 self.contexts[path] = snapshots[0]
             else:
@@ -520,6 +621,8 @@ class Usage:
         except sqlite3.Error:
             pass
         paths = sorted(p for p in (self.app_data / "conversations").glob("*.db") if UUID.fullmatch(p.stem))
+        if self.history_file and not self.history_loaded:
+            self.load_history()
         rows, problems = [], 0
         seen = set()
         errors, seen_errors, seen_failed_messages = [], set(), set()
@@ -535,10 +638,13 @@ class Usage:
                     continue
                 if marker:
                     seen.add(marker)
-                row = {k: v for k, v in entry.items() if k not in ("_message", "_model_tag")} | {"id": path.stem}
+                row = entry.copy()
+                row.pop("_message")
+                row["id"] = path.stem
                 if health:
                     row["_health_message"] = marker
-                    row["_model_tag"] = entry.get("_model_tag")
+                else:
+                    row.pop("_model_tag", None)
                 rows.append(row)
             if health:
                 for error in self.errors.get(path, ()):
@@ -550,6 +656,16 @@ class Usage:
                     if marker:
                         seen_failed_messages.add(marker)
                     errors.append({**error, "id": path.stem})
+        if self.history_file:
+            for obsolete in self.cached.keys() - set(paths):
+                self.cached.pop(obsolete)
+                self.compactions.pop(obsolete.stem)
+                self.errors.pop(obsolete)
+                self.contexts.pop(obsolete, None)
+                self.history_dirty = True
+            if self.history_dirty and time.monotonic() >= self.history_write_due:
+                self.history_write_due = time.monotonic() + 60
+                self.save_history()
         rows.sort(key=lambda row: (row["time"], row["step"]))
         result = rows, titles, len(paths), problems
         return (*result, errors) if health else result
@@ -565,43 +681,26 @@ class Usage:
         return reference_total(in_range, load_book(self.app_data))
 
     def load_rates(self, first, last):
-        start = (date.fromisoformat(first) - timedelta(days=7)).isoformat()
-        bounds = start, last
-        if bounds == self.fx_range and time.monotonic() - self.fx_checked < (
-                1800 if self.fx_rates and not self.fx_fallback else 60):
+        bounds = (date.fromisoformat(first) - timedelta(days=7)).isoformat(), last
+        if bounds != self.fx_range:
+            self.fx_range, self.fx_checked = bounds, 0
+            self.fx_rates, self.fx_fallback = cached_fx_history(bounds), True
+        if self.fx_job is not None and self.fx_job[1].done():
+            requested, job = self.fx_job
+            self.fx_job = None
+            if requested == bounds:
+                rates = job.result()
+                self.fx_checked = time.monotonic()
+                self.fx_rates, self.fx_fallback = (rates, False) if rates else (cached_fx_history(bounds), True)
+        if self.fx_checked and time.monotonic() - self.fx_checked < (60 if self.fx_fallback else 1800):
             return
-        if not self.fx_range or bounds != self.fx_range:
-            self.fx_rates = {}
-        self.fx_range, self.fx_checked = bounds, time.monotonic()
-        request = Request(
-            f"https://api.frankfurter.dev/v1/{start}..{last}?base=USD&symbols=CNY",
-            headers={"User-Agent": "Antigravity-Usage-Dashboard/1.0"},
-        )
-        cache = read_fx_cache()
-        try:
-            with DIRECT.open(request, timeout=6) as response:
-                rates = json.load(response)["rates"]
-            self.fx_rates = {
-                day: rate["CNY"] for day, rate in rates.items()
-                if isinstance(rate.get("CNY"), (int, float)) and 0 < rate["CNY"] < 100
-            }
-        except (OSError, URLError, KeyError, ValueError, TypeError):
-            self.fx_rates = {}
-        self.fx_fallback = False
-        if self.fx_rates:
-            latest = max(self.fx_rates.items())
-            cache.update(range=list(bounds), rates=self.fx_rates, latest={"date": latest[0], "rate": latest[1]})
-            write_fx_cache(cache)
+        if self.fx_executor is not None:
+            if self.fx_job is None:
+                self.fx_job = bounds, self.fx_executor.submit(fetch_fx_history, bounds)
             return
-        self.fx_fallback = True
-        saved = cache.get("rates")
-        if list(bounds) == cache.get("range") and isinstance(saved, dict) and saved:
-            self.fx_rates = {day: rate for day, rate in saved.items()
-                             if isinstance(rate, (int, float)) and 0 < rate < 100}
-            return
-        latest = cache.get("latest")
-        rate = latest.get("rate") if isinstance(latest, dict) else None
-        self.fx_rates = {start: rate if type(rate) in (int, float) and 0 < rate < 100 else FALLBACK_FX}
+        rates = fetch_fx_history(bounds)
+        self.fx_checked = time.monotonic()
+        self.fx_rates, self.fx_fallback = (rates, False) if rates else (cached_fx_history(bounds), True)
 
     def report(self, start="", end="", conversation="", convert=False, only=False, catalog=None,
                hours=0, day=False, *, health=False, health_window=""):
@@ -614,7 +713,6 @@ class Usage:
         hours = max(0, min(int(hours or 0), 168))
         moment_now = datetime.now(TZ)
         prices = load_book(self.app_data)
-        summarize = partial(aggregate, book=prices)
         if day:
             start = end = moment_now.strftime("%Y-%m-%d")
             cutoff = moment_now.strftime("%Y-%m-%dT00:00:00")
@@ -640,13 +738,15 @@ class Usage:
             name_of, model_order = dashboard_model_names(catalog, rows)
 
         for row in rows:
-            amount = reference_cost(row, prices)
+            price = prices.rate(row)
+            amount = cost_at_rate(row, price)
             pos = bisect_right(fx_days, row["day"])
             fx_day = fx_days[pos - 1] if pos else None
             if fx_day and (date.fromisoformat(row["day"]) - date.fromisoformat(fx_day)).days > 7:
                 fx_day = None
             rate = self.fx_rates[fx_day] if fx_day else None
             row.update(usd=amount, cny=amount * rate if amount is not None and rate else None,
+                       _savings=savings_at_rate(row, price),
                        fx_date=fx_day, fx_rate=rate)
             by_session[row["id"]].append(row)
             calendar[row["day"]].append(row)
@@ -664,7 +764,7 @@ class Usage:
                 daily_filled = [(key, daily.get(key) or []) for key in day_keys(low, high)]
         sessions = []
         for key, group in by_session.items():
-            summary = summarize(group)
+            summary = aggregate(group)
             sessions.append({
                 "id": key, "title": titles.get(key) or key[:8], "updated": group[-1]["time"],
                 "calls": len(group), "compactions": self.compactions.get(key, 0),
@@ -679,6 +779,7 @@ class Usage:
             models = catalog or {}
             matches = catalog_selection(models, row["model"]) or catalog_selection(models, row["label"])
             latest = {**row, "model_limit": catalog_limit(matches)}
+            latest.pop("_savings")
         hourly_rows = []
         if hours:
             now = moment_now.replace(minute=0, second=0, microsecond=0)
@@ -689,7 +790,7 @@ class Usage:
                 moment = now - timedelta(hours=offset)
                 key = moment.strftime("%Y-%m-%d %H:00")
                 hourly_rows.append({"day": key, "hour": moment.strftime("%H:00"),
-                                    **summarize(hourly.get(key) or [])})
+                                    **aggregate(hourly.get(key) or [])})
         health_data = None
         if health:
             if health_window in ("24h", "month"):
@@ -721,7 +822,7 @@ class Usage:
             model_rows = [
                 {"model": label, "ids": sorted({row["model"] for row in group}),
                  "billing_models": sorted({prices.model(row) for row in group if row["usd"] is not None}),
-                 **summarize(group)}
+                 **aggregate(group)}
                 for label, group in by_model.items()
             ]
             model_rows.sort(key=lambda item: (model_order.get(item["model"], len(model_order)), -item["total"]))
@@ -735,26 +836,28 @@ class Usage:
                 latest.pop("_model_tag", None)
         else:
             model_rows = sorted(
-                [{"model": key, **summarize(group)} for key, group in by_model.items()],
+                [{"model": key, **aggregate(group)} for key, group in by_model.items()],
                 key=lambda item: item["total"], reverse=True,
             )
         return {
             "timezone": "UTC+08:00", "range": [first, last], "scanned": scanned, "unreadable": problems,
             "granularity": "hour" if hours else "day", "hours": hours, "day_mode": bool(day),
             "hourly": hourly_rows,
-            "calendar": [{"day": day, **summarize(group)} for day, group in calendar.items()],
-            "sessions": sessions, "selected": selected, "all": summarize(filtered),
-            "session": {**summarize(session_rows), "compactions": self.compactions.get(selected, 0)},
+            "calendar": [{"day": day, **aggregate(group)} for day, group in calendar.items()],
+            "sessions": sessions, "selected": selected, "all": aggregate(filtered),
+            "session": {**aggregate(session_rows), "compactions": self.compactions.get(selected, 0)},
             "latest": latest,
-            "recent": [{**row, "billing_model": prices.model(row) if row["usd"] is not None else None}
+            "recent": [{**{key: value for key, value in row.items() if key != "_savings"},
+                        "billing_model": prices.model(row) if row["usd"] is not None else None}
                        for row in reversed(session_rows[-20:])],
-            "days": [{"day": stamp, **summarize(group),
+            "days": [{"day": stamp, **aggregate(group),
                       "fx_date": group[0]["fx_date"] if group else None,
                       "fx_rate": group[0]["fx_rate"] if group else None}
                      for stamp, group in daily_filled],
             "models": model_rows,
             "price_sources": prices.status,
             "fx": {"enabled": convert, "available": bool(fx_days), "fallback": self.fx_fallback,
+                   "pending": convert and self.fx_job is not None,
                    "rate": self.fx_rates[max(self.fx_rates)] if self.fx_rates else None},
         } | ({"health": health_data, "usage_heatmap": usage_data} if health else {})
 

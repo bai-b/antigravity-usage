@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from websocket import WebSocketException, create_connection
 
+from file_actions import file_action
 from pricing import current_at, load_book, refresh_sources, title_key
 
 try:
@@ -29,8 +30,8 @@ except ImportError:  # older installs ship without the self-heal module
         return None
 
 from usage import (APP_DATA, LOOPBACK, ROOT, UUID, Usage, catalog_limit, catalog_selection,
-                   count_tokens, latest_usd_cny, message, model_catalog, model_label, nested, quota_snapshot, quotas_by_model,
-                   readonly, reference_total, seconds)
+                   count_tokens, latest_usd_cny, message, model_catalog, model_family, model_label, model_text, nested,
+                   quota_snapshot, quotas_by_model, read_number, readonly, reference_total, seconds)
 
 
 DESKTOP_DATA = Path(os.environ["APPDATA"]) / "Antigravity"
@@ -40,6 +41,7 @@ IPC_READY = b"agy-usage:ready"
 IPC_WAITING = b"agy-usage:waiting"
 IPC_DETACH = b"agy-usage:detach"
 WEB = ROOT / "web"
+BAR_VERSION = 59
 BAR = (WEB / "composer-status.js").read_text(encoding="utf-8")
 HTML = (WEB / "dashboard.html").read_text(encoding="utf-8").split("<body>", 1)[1].split("</body>", 1)[0]
 ASSETS = json.dumps({"html": HTML, "css": (WEB / "dashboard.css").read_text(encoding="utf-8"),
@@ -49,6 +51,7 @@ INSTALL = (
     BAR
     + "\nwindow.__agyUsageStatus.install(" + ASSETS + ");"
     + "\ntry {" + VIEW + "\n} catch (error) { console.error('[agy-usage] dashboard bundle failed', error); }"
+    + "\n" + (WEB / "file-menu.js").read_text(encoding="utf-8")
 )
 LOG = logging.getLogger("composer-status")
 CONNECTION_ERRORS = (OSError, ValueError, WebSocketException)
@@ -101,27 +104,40 @@ def renderer_code(authority, script):
     return "if(location.origin===" + origin + "){\n" + script + "\n}"
 
 
-def active_context(rows, selected, catalog, window_mode="", *, prices=None, since=None, turns=(), checkpoint=None):
+def active_context(rows, selected, catalog, window_mode="", *, prices=None, since=None, turns=(), checkpoint=None,
+                   executor_routes=()):
     recent = rows[-1] if rows else {}
     selection = catalog_selection(catalog, selected)
+    orchestrator = model_label(selected).startswith("orchestrator ")
+    legacy_selection = ({key: entry for key, entry in catalog.items()
+                         if model_family(selected) in entry.get("aliases", ())}
+                        if orchestrator else {})
+    matching_models = selection | legacy_selection
+
     def row_selection(row):
-        return (catalog_selection(catalog, row.get("label", ""))
-                or catalog_selection(catalog, row.get("model", ""))) or {}
+        return catalog_selection(catalog, row.get("model", "")) or catalog_selection(catalog, row.get("label", ""))
 
     def correlates(row, index):
         identity = row.get("model", "")
-        if identity in selection or model_label(row.get("label", "")) == model_label(selected):
+        if identity in matching_models or model_label(row.get("label", "")) == model_label(selected):
             return True
-        if selection.keys() & row_selection(row).keys():
+        if matching_models.keys() & row_selection(row).keys():
             return True
+        turn_index = bisect_right(turns, row["step"]) if turns else 0
+        if orchestrator and turn_index:
+            start = turns[turn_index - 1]
+            for end, planner, executor_tag in reversed(executor_routes):
+                if end < start:
+                    break
+                if end < row["step"]:
+                    return planner in matching_models and row.get("_model_tag") == executor_tag
         if not prices or not (turns or since is not None):
             return False
         routes = current_at(prices.routes, row["day"]) or {}
-        selected_routes = {tuple(routes[title_key(entry["label"])]) for entry in selection.values()
+        selected_routes = {tuple(routes[title_key(entry["label"])]) for entry in matching_models.values()
                            if title_key(entry["label"]) in routes}
         if len(selected_routes) != 1:
             return False
-        turn_index = bisect_right(turns, row["step"]) if turns else 0
         if turns and not turn_index:
             return False
         if not turns and datetime.fromisoformat(row["time"]).timestamp() < since:
@@ -139,7 +155,7 @@ def active_context(rows, selected, catalog, window_mode="", *, prices=None, sinc
             if (earlier["step"] < turns[turn_index - 1] if turns
                     else datetime.fromisoformat(earlier["time"]).timestamp() < since):
                 break
-            if earlier.get("model") in selection or (prices.model(earlier) or earlier.get("model")) == planner:
+            if earlier.get("model") in matching_models or (prices.model(earlier) or earlier.get("model")) == planner:
                 return True
         return False
 
@@ -201,6 +217,28 @@ def native_task_checklist(db, turn):
     return {}
 
 
+def recorded_executor_routes(db):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='executor_metadata'").fetchone():
+        return ()
+    routes = []
+    for (raw,) in db.execute("SELECT data FROM executor_metadata"):
+        try:
+            # ExecutorMetadata.cascade_config.planner_config records the per-run pairing.
+            run = message(raw, (3, 10))
+            config = nested(run, 10, (1,))
+            planner = nested(config, 1, (1, 28, 60))
+            executor = nested(planner, 60, (1,))
+        except ValueError:
+            continue
+        end = read_number(run, 3)
+        planner_id = model_text(planner.get(28))
+        planner_tag = read_number(planner, 1)
+        executor_tag = read_number(executor, 1)
+        if end is not None and planner_id and planner_tag and executor_tag and planner_tag != executor_tag:
+            routes.append((end, planner_id, executor_tag))
+    return tuple(sorted(routes))
+
+
 def step_statistics(path):
     with readonly(path) as db:
         db.execute("BEGIN")
@@ -221,6 +259,7 @@ def step_statistics(path):
         return {"turns": turns, "steps": steps, "tool_seconds": tool_time, "compactions": compactions,
                 "_since": seconds(message(raw_input, (1,)), 1),
                 "_turns": tuple(idx for idx, _ in inputs), "_checkpoint": checkpoint,
+                "_executor_routes": recorded_executor_routes(db),
                 "_checklist": native_task_checklist(db, inputs[-1][0]) if inputs else {}}
 
 
@@ -301,21 +340,24 @@ def task_progress(app_data, conversation, stats, recent=None, prices=None):
 
 IDLE = "CASCADE_RUN_STATUS_IDLE"
 WORKING = {"CASCADE_RUN_STATUS_RUNNING", "CASCADE_RUN_STATUS_BUSY", "CASCADE_RUN_STATUS_CANCELING"}
-# NO_TOOL_CALL, TERMINAL_STEP_TYPE, TERMINAL_CUSTOM_HOOK and INJECTED_RESPONSE.
-COMPLETED_REASONS = {4, 8, 9, 10}
+# ExecutorTerminationReason: only terminal outcomes that can be shown to the user.
+END_REASONS = {
+    1: "error", 2: "canceled", 3: "limit", 4: "success", 6: "limit",
+    8: "success", 9: "success", 10: "success", 11: "limit",
+}
 
 
 def conversation_activity(app_data):
     with readonly(app_data / "conversation_summaries.db") as db:
         rows = db.execute(
-            "SELECT conversation_id, title, status, not_fully_idle, raw_summary FROM conversation_summaries "
-            "WHERE nesting_depth=0 AND parent_conversation_id='' AND killed=0 "
+            "SELECT conversation_id, title, status, not_fully_idle, killed, raw_summary FROM conversation_summaries "
+            "WHERE nesting_depth=0 AND parent_conversation_id='' "
             "AND status IN ('CASCADE_RUN_STATUS_IDLE','CASCADE_RUN_STATUS_RUNNING',"
             "'CASCADE_RUN_STATUS_BUSY','CASCADE_RUN_STATUS_CANCELING') "
             "ORDER BY last_modified_time DESC, conversation_id"
         ).fetchall()
     running, completed = [], []
-    for cid, title, status, background, raw in rows:
+    for cid, title, status, background, killed, raw in rows:
         if not UUID.fullmatch(cid or ""):
             continue
         # Fields from the desktop's CascadeTrajectorySummary and ConversationAnnotations.
@@ -331,12 +373,15 @@ def conversation_activity(app_data):
         if annotations.get(4) or metadata.get(16) or source.get(3) or summary.get(22) in (22, 23):
             continue
         item = {"id": cid, "title": title.strip() or "未命名会话"}
-        if status in WORKING or status == IDLE and background:
+        if not killed and (status in WORKING or status == IDLE and background):
             running.append({**item, "background": status == IDLE})
-        elif (status == IDLE and 8 not in summary and not summary.get(25)
-              and summary.get(28) in COMPLETED_REASONS and modified
+        elif (status == IDLE and not background and 8 not in summary and modified
               and (annotations.get(8) or int(modified) > (viewed or 0))):
-            completed.append({**item, "revision": modified})
+            outcome = END_REASONS.get(summary.get(28))
+            if killed or summary.get(25):
+                outcome = "canceled" if killed else "interrupted"
+            if outcome:
+                completed.append({**item, "revision": modified, "outcome": outcome})
     return {"running": running, "completed": completed}
 
 
@@ -371,7 +416,7 @@ def session_metrics(usage, conversation, selected="", catalog=None, window_mode=
     display_stats = {key: value for key, value in stats.items() if not key.startswith("_")}
     context_metrics = active_context(usage.contexts.get(path, ()), selected, catalog, window_mode,
                                      prices=prices, since=stats.get("_since"), turns=stats.get("_turns", ()),
-                                     checkpoint=stats.get("_checkpoint"))
+                                     checkpoint=stats.get("_checkpoint"), executor_routes=stats.get("_executor_routes", ()))
     if not rows:
         return {"total": 0, "reference_usd": 0, "compactions": usage.compactions.get(path.stem, 0),
                 **display_stats, "task_progress": progress, **context_metrics}
@@ -422,10 +467,12 @@ def remove_renderers(connections, targets):
 
 def poll(guard):
     usage = Usage()
-    history = Usage()
     executor = ThreadPoolExecutor(max_workers=1)
-    rate_executor = ThreadPoolExecutor(max_workers=1)
+    rate_executor = ThreadPoolExecutor(max_workers=2)
+    history = Usage(persist_history=True, fx_executor=rate_executor)
+    file_executor = ThreadPoolExecutor(max_workers=2)
     requests = {}
+    file_requests = {}
     reports = {}
     catalogs = {}
     quota_cache = {}
@@ -434,7 +481,8 @@ def poll(guard):
     def build_report(filters, snapshot=None, catalog=None, fx=None):
         key = json.dumps(filters, sort_keys=True)
         stamp, core = reports.get(key, (0, None))
-        if core is None or time.monotonic() - stamp > 20:
+        fx_ready = history.fx_job is None or history.fx_job[1].done()
+        if core is None or time.monotonic() - stamp > 20 or core["fx"]["pending"] and fx_ready:
             cached = dashboard_report(history, filters, snapshot, catalog, fx)
             if "error" in cached:
                 return cached
@@ -443,9 +491,7 @@ def poll(guard):
         if len(reports) > 40:
             reports.pop(next(iter(reports)))
         return {"report": dict(core, quota=snapshot, latest_fx=fx)}
-    warm = dict(start="", end="", conversation="", only=False, hours=0, day=False, health_window="24h")
-    week_job = executor.submit(history.week_reference_usd)
-    executor.submit(history.report, convert=True)
+    week_job = None
     rate_job = rate_executor.submit(latest_usd_cny)
     rate_due, week_due = 0, 0
     prices_job, prices_due = None, 0
@@ -508,13 +554,13 @@ def poll(guard):
                 except (OSError, ValueError, sqlite3.Error):
                     pass
                 week_job, week_due = None, now + 30
-            if week_job is None and targets and now >= week_due:
-                week_job = executor.submit(history.week_reference_usd)
             for key in list(connections.keys() - targets.keys()):
                 connections.pop(key).close()
                 request = requests.pop(key, None)
                 if request:
                     request[2].cancel()
+            for key in file_requests.keys() - targets.keys():
+                file_requests.pop(key)[1].cancel()
             if not targets:
                 attached = False
                 guard.settimeout(1)
@@ -535,7 +581,7 @@ def poll(guard):
                         )
                     ws = connections[key]
                     probe = evaluate(ws, renderer_code(authority,
-                        "window.__agyUsageStatus?.version === 56 && window.__agyUsageStatus.probe();"))
+                        f"window.__agyUsageStatus?.version === {BAR_VERSION} && window.__agyUsageStatus.probe();"))
                     if probe is False:
                         evaluate(ws, renderer_code(authority, INSTALL))
                         probe = evaluate(ws, renderer_code(authority, "window.__agyUsageStatus.probe();"))
@@ -553,6 +599,8 @@ def poll(guard):
                     quotas = quotas_by_model(snapshot["groups"], {item["model"] for item in probe["inputs"]}, catalog)
                     if not warmed:
                         warmed = True
+                        warm = dict(start="", end="", conversation=next((item["id"] for item in probe["inputs"]), ""),
+                                    only=False, hours=0, day=False, health_window="24h")
                         executor.submit(build_report, warm, snapshot, catalog, latest_rate)
                     sessions = []
                     for item in probe["inputs"]:
@@ -577,17 +625,30 @@ def poll(guard):
                     if request and request[2].done():
                         completed = {"epoch": request[0], "id": request[1], **request[2].result()}
                         requests.pop(key)
+                    file_result = None
+                    file_pending = probe.get("fileAction")
+                    file_request = file_requests.get(key)
+                    if not file_request and isinstance(file_pending, dict) and type(file_pending.get("id")) is int:
+                        file_request = (file_pending["id"], file_executor.submit(file_action, file_pending))
+                        file_requests[key] = file_request
+                    if file_request and file_request[1].done():
+                        file_result = {"id": file_request[0], **file_request[1].result()}
                     payload = json.dumps({"sessions": sessions, "quotas": quotas, "completed": completed,
-                                          "activity": activity,
+                                          "activity": activity, "fileResult": file_result,
                                           "preview": {"week_usd": week_usd, "rate": latest_rate}})
                     evaluate(ws, renderer_code(authority, f"window.__agyUsageStatus.render({payload});"))
+                    if file_result is not None:
+                        file_requests.pop(key)
                     attached = True
                 except CONNECTION_ERRORS:
                     if key in connections:
                         connections.pop(key).close()
+            if week_job is None and now >= week_due:
+                week_job = executor.submit(history.week_reference_usd)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
         rate_executor.shutdown(wait=False, cancel_futures=True)
+        file_executor.shutdown(wait=False, cancel_futures=True)
         remove_renderers(connections, targets)
 
 

@@ -38,7 +38,7 @@ CONFIG = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "agy-release" / "
 BEGIN = "# >>> agy-release managed >>>"
 END = "# <<< agy-release managed <<<"
 SOURCE_FILES = ("README.md", "install.py", "plugin.json", "composer_status.py", "cdp_guard.py", "usage.py",
-                "dashboard.py", "prices.json", "pricing.py")
+                "dashboard.py", "file_actions.py", "prices.json", "pricing.py")
 
 
 def say(message=""):

@@ -1,8 +1,8 @@
 (() => {
   const key = "__agyUsageStatus";
-  if (window[key]?.version === 56) return;
+  if (window[key]?.version === 59) return;
   window[key]?.remove();
-  const state = window[key] = { version: 56, request: null };
+  const state = window[key] = { version: 59, request: null };
   const dashboardCache = new Map();
   const bars = new Map();
   const launchers = new Map();
@@ -125,6 +125,7 @@
     .agy-usage-running-control[hidden] {display:none}
     .agy-usage-header-pill.agy-usage-running[data-active] {background:var(--agy-usage-accent-soft);color:var(--agy-usage-accent);font-weight:600}
     .agy-usage-header-pill.agy-usage-running[data-active][data-completed] {background:var(--agy-usage-good-soft);color:var(--agy-usage-good)}
+    .agy-usage-header-pill.agy-usage-running[data-attention] {background:var(--agy-usage-warn-soft);color:var(--agy-usage-warn)}
     [data-agy-usage-running-list] {width:320px;padding:10px;max-height:min(420px,calc(100vh - 24px));overflow:auto;overscroll-behavior:contain}
     [data-agy-usage-running-list] header {padding:2px 6px 8px;margin-bottom:4px}
     [data-agy-usage-running-list] section:not([hidden]) + section:not([hidden]) {border-block-start:1px solid var(--agy-usage-line);margin-block-start:6px;padding-block-start:6px}
@@ -137,6 +138,7 @@
     [data-agy-usage-running-list] a span:first-child {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     [data-agy-usage-running-list] a span:nth-child(2), [data-agy-usage-running-list] p {color:var(--agy-usage-dim);font-size:11px}
     [data-agy-usage-running-list] a span:nth-child(2) {white-space:nowrap}
+    [data-agy-usage-running-list] a span.agy-usage-activity-outcome {color:var(--agy-usage-warn)}
     [data-agy-usage-running-list] p {margin:0;padding:5px 6px}
   `;
   // 旧版注入留下的同款基础样式一并清掉，重复注入不再累积。
@@ -479,12 +481,12 @@
     const title = document.createElement("header");
     title.id = popup.id + "-title";
     popup.setAttribute("aria-labelledby", title.id);
-    const groups = ["运行中", "已完成 · 未查看"].map(label => {
+    const groups = Array.from({length: 2}, () => {
       const section = document.createElement("section");
       const heading = document.createElement("h3");
       const list = document.createElement("ul");
       section.append(heading, list);
-      return {section, heading, list, label};
+      return {section, heading, list};
     });
     const empty = document.createElement("p");
     empty.textContent = "没有待查看的已完成会话";
@@ -567,21 +569,25 @@
       const hasRunning = running.length > 0;
       const hasCompleted = completed.length > 0;
       const mixed = hasRunning && hasCompleted;
-      trigger.textContent = hasRunning ? "运行中 " + value(running.length) : "已完成 " + value(completed.length);
+      const attention = completed.some(item => item.outcome !== "success");
+      const completionLabel = attention ? "已结束 · 未查看" : "已完成 · 未查看";
+      const label = hasRunning ? "运行中" : attention ? "待查看" : "已完成";
+      trigger.textContent = label + " " + value(hasRunning ? running.length : completed.length);
       if (hasRunning) trigger.removeAttribute("aria-description");
-      else trigger.setAttribute("aria-description", "仅统计未查看的会话");
+      else trigger.setAttribute("aria-description", completionLabel);
       trigger.toggleAttribute("data-active", hasRunning || hasCompleted);
-      trigger.toggleAttribute("data-completed", !hasRunning);
-      title.textContent = mixed ? "会话状态" : hasRunning ? "运行中的会话" : "已完成 · 未查看";
+      trigger.toggleAttribute("data-completed", !hasRunning && !attention);
+      trigger.toggleAttribute("data-attention", !hasRunning && attention);
+      title.textContent = mixed ? "会话状态" : hasRunning ? "运行中的会话" : completionLabel;
       empty.hidden = hasRunning || hasCompleted;
       const focusedId = popup.contains(document.activeElement) && document.activeElement.dataset.conversation;
       let focusedLink;
       [running, completed].forEach((items, index) => {
-        const {section, heading, list, label} = groups[index];
+        const {section, heading, list} = groups[index];
         section.hidden = !items.length;
         heading.hidden = !mixed;
-        heading.textContent = label + " " + value(items.length);
-        list.replaceChildren(...items.map(({id, title, background}) => {
+        heading.textContent = (index === 0 ? "运行中" : completionLabel) + " " + value(items.length);
+        list.replaceChildren(...items.map(({id, title, background, outcome}) => {
           const row = document.createElement("li");
           const link = document.createElement("a");
           link.href = "/c/" + id;
@@ -591,9 +597,11 @@
           name.textContent = title;
           name.title = title;
           link.append(name);
-          if (background) {
+          const outcomeLabel = {error:"运行异常", canceled:"已取消", interrupted:"已中断", limit:"达到限制"}[outcome];
+          if (background || outcomeLabel) {
             const status = document.createElement("span");
-            status.textContent = "后台任务";
+            status.textContent = outcomeLabel || "后台任务";
+            if (outcomeLabel) status.className = "agy-usage-activity-outcome";
             link.append(status);
           }
           if (id === focusedId) focusedLink = link;
@@ -788,7 +796,8 @@
     inputs: inputs().map(input => ({
       id: conversation(input), model: model(input), windowMode: modelTrigger(input)?.dataset.contextWindow || ""
     })),
-    request: state.request
+    request: state.request,
+    fileAction: state.fileAction || null
   });
 
   state.install = ({ html, css, theme }) => {
@@ -828,18 +837,22 @@
       document.body.append(scrim, dialog);
       let view = null;
       const mount = () => {
-        view = state.createDashboard(root, filters => new Promise((resolve, reject) => {
-          const cacheKey=JSON.stringify(filters);
-          const cached=dashboardCache.get(cacheKey);
-          if(cached&&performance.now()-cached.time<5000){resolve(cached.report);return;}
-          pending = { resolve, reject, cacheKey };
-          state.request = { epoch, id: ++serial, filters };
-          timeout = setTimeout(() => {
-            pending = undefined;
-            state.request = null;
-            reject(new Error("本机用量服务未响应，请刷新重试"));
-          }, 25000);
-        }), id);
+        view = state.createDashboard(root, (filters, showCached) => {
+          const cacheKey = JSON.stringify(filters);
+          const cached = dashboardCache.get(cacheKey);
+          const age = cached ? performance.now() - cached.time : Infinity;
+          if (age < 5000 && !cached.report.fx.pending) return Promise.resolve(cached.report);
+          if (age < 300000) showCached?.(cached.report);
+          return new Promise((resolve, reject) => {
+            pending = { resolve, reject, cacheKey };
+            state.request = { epoch, id: ++serial, filters };
+            timeout = setTimeout(() => {
+              pending = undefined;
+              state.request = null;
+              reject(new Error("本机用量服务未响应，请刷新重试"));
+            }, 25000);
+          });
+        }, id);
       };
       state.finish = data => {
         if (!pending || data.epoch !== epoch || data.id !== serial) return;
@@ -868,12 +881,13 @@
         if (opener.isConnected) opener.focus();
       }, {once: true});
       dialog.show();
-      requestAnimationFrame(mount);
+      mount();
     };
   };
 
-  state.render = ({ sessions, quotas, completed, preview = {}, activity = null }) => {
+  state.render = ({ sessions, quotas, completed, preview = {}, activity = null, fileResult = null }) => {
     if (completed) state.finish?.(completed);
+    if (fileResult) state.finishFileAction?.(fileResult);
     placeLaunchers();
     const visible = inputs();
     for (const [input, bar] of bars) {
@@ -998,6 +1012,7 @@
   };
   state.remove = () => {
     state.dismiss?.();
+    state.removeFileMenu?.();
     for (const bar of bars.values()) { bar.usage.destroy(); bar.remove(); }
     styles.remove();
     for (const button of launchers.values()) button.destroy();

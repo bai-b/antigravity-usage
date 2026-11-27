@@ -7,5 +7,5 @@ __pycache__/
 dist/*/
 dist/*.zip
 dist/*.sha256
-!dist/antigravity-usage-1.1.44-win-x64.zip.sha256
+!dist/antigravity-usage-1.1.48-win-x64.zip.sha256
 # <<< agy-release managed <<<

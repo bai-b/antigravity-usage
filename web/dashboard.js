@@ -494,8 +494,9 @@ function draw(report) {
   $("coverage").textContent = "本机桌面端 · UTC+08:00 · " + num(report.scanned) + " 个会话库"
     + (report.range[0] ? " · " + report.range.join(" 至 ") : "")
     + (report.unreadable ? " · " + num(report.unreadable) + " 个库暂未读到" : "");
-  $("pricing").textContent = (!report.fx.available
-    ? "暂未获取历史汇率，人民币金额留空。"
+  $("pricing").textContent = (report.fx.pending
+    ? "正在更新历史汇率，暂用本地记录。"
+    : !report.fx.available ? "暂未获取历史汇率，人民币金额留空。"
     : (report.fx.fallback ? "汇率接口不可用，已按离线兜底汇率折算；" : "")
       + "参考费用为 API 等值估算，未匹配公开价格的模型仍计入 Token 总量。");
   const sources = Object.values(report.price_sources || {});
@@ -532,12 +533,16 @@ async function update(showStatus = true) {
   const filters = {start: $("start").value, end: $("end").value, conversation: follow ? "" : wanted,
     only: $("only").checked, hours: windowHours, day: windowDay, health_window: healthWindow};
   try {
-    const result = await load(filters);
+    const result = await load(filters, lastReport ? null : cached => {
+      if (disposed) return;
+      draw(cached);
+      $("state").textContent = "正在刷新…";
+    });
     if (disposed || filters.health_window !== healthWindow) return;
     draw(result);
     $("state").textContent = "更新于 " + stamp(new Date().toISOString());
   } catch (error) {
-    if (!disposed) $("state").textContent = "读取失败 · " + error.message;
+    if (!disposed) $("state").textContent = (lastReport ? "刷新失败 · " : "读取失败 · ") + error.message;
   } finally {
     loading = false;
     if (pending && !disposed) {

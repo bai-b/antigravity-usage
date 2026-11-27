@@ -22,7 +22,7 @@ DESTINATION = PLUGINS / "agy-usage"
 SIDECAR_ID = "agy-usage/composer"
 MARKER = ".agy-usage-release"
 PORT = 43827
-PAYLOAD = ("plugin.json", "composer_status.py", "cdp_guard.py", "usage.py", "dashboard.py", "prices.json", "pricing.py",
+PAYLOAD = ("plugin.json", "composer_status.py", "cdp_guard.py", "usage.py", "dashboard.py", "file_actions.py", "prices.json", "pricing.py",
            "mcp_config.json", "web", "skills", "runtime")
 
 

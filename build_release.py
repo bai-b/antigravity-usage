@@ -18,7 +18,7 @@ WHEEL_URL = (
 )
 WHEEL_SHA256 = "af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef"
 FILES = ("README.md", "LICENSE", "THIRD_PARTY.md", "Install.cmd", "Uninstall.cmd", "install.py",
-         "composer_status.py", "cdp_guard.py", "usage.py", "dashboard.py", "plugin.json", "prices.json", "pricing.py",
+         "composer_status.py", "cdp_guard.py", "usage.py", "dashboard.py", "file_actions.py", "plugin.json", "prices.json", "pricing.py",
          "mcp_config.json")
 
 
